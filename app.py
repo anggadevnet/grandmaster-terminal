@@ -311,7 +311,7 @@ def get_fib_levels(df, back_candles=50):
 # --- SIDEBAR ---
 st.sidebar.title("⚙️ Grandmaster Settings")
 app_mode = st.sidebar.radio("Mode:", ["🎯 Analisis Satuan", "🔥 Market Scanner"], index=0)
-source_opt = st.sidebar.selectbox("Sumber Data / Exchange", ['binance', 'bybit', 'kucoin', 'Yahoo Finance'], index=0)
+source_opt = st.sidebar.selectbox("Sumber Data / Exchange", ['gateio', 'mexc', 'kucoin', 'okx', 'Yahoo Finance'], index=0)
 
 # ===========================================
 # MODE 1: ANALISIS SATUAN
@@ -663,4 +663,5 @@ else:
                 else:
                     st.warning("Tidak ada coin memenuhi kriteria.")
             except Exception as e:
+
                 st.error(f"Error: {e}")
