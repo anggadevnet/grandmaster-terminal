@@ -8,7 +8,7 @@ import numpy as np
 import time
 
 # --- SETTINGS ---
-st.set_page_config(layout="wide", page_title="Grandmaster Terminal (Ultimate Fix)")
+st.set_page_config(layout="wide", page_title="Tradingview Terminal (Ultimate)")
 
 # --- HELPER FUNCTIONS ---
 
@@ -309,7 +309,7 @@ def get_fib_levels(df, back_candles=50):
     return levels
 
 # --- SIDEBAR ---
-st.sidebar.title("⚙️ Grandmaster Settings")
+st.sidebar.title("⚙️ AnggaPro Settings")
 app_mode = st.sidebar.radio("Mode:", ["🎯 Analisis Satuan", "🔥 Market Scanner"], index=0)
 source_opt = st.sidebar.selectbox("Sumber Data / Exchange", ['gateio', 'mexc', 'kucoin', 'okx', 'Yahoo Finance'], index=0)
 
@@ -665,3 +665,4 @@ else:
             except Exception as e:
 
                 st.error(f"Error: {e}")
+
