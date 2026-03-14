@@ -9,7 +9,7 @@ import ccxt
 import time
 
 # --- 1. PAGE CONFIG (White Clean Theme) ---
-st.set_page_config(layout="wide", page_title="SniperPalmerah - Strategist", initial_sidebar_state="expanded")
+st.set_page_config(layout="wide", page_title="Grandmaster V6 Fix", initial_sidebar_state="expanded")
 
 st.markdown("""
 <style>
@@ -25,7 +25,7 @@ st.markdown("""
     /* Custom Alert Boxes */
     .alert-buy { background-color: #e6fffa; border-left: 5px solid #00C853; padding: 15px; border-radius: 5px; margin-bottom: 10px; }
     .alert-sell { background-color: #ffebee; border-left: 5px solid #FF1744; padding: 15px; border-radius: 5px; margin-bottom: 10px; }
-    .alert-wait { background-color: #f5f5f5; border-left: 5px solid #9E9E9E; padding: 15px; border-radius: 5px; margin-bottom: 10px; }
+    .alert-wait { background-color: #fff3e0; border-left: 5px solid #FF9800; padding: 15px; border-radius: 5px; margin-bottom: 10px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -70,13 +70,10 @@ def calculate_all(df):
     df['RVOL'] = df['Volume'] / df['Vol_MA']
     df['ATR'] = ta.atr(df['High'], df['Low'], df['Close'], length=14)
     
-    # Candlestick Patterns (using pandas_ta internal logic manually simplified for streamlit)
-    # Hammer: Open == High, Close == High, Long Lower Wick
+    # Candlestick Patterns
     df['Hammer'] = (((df['High'] - df['Low']) > 3 * (df['Open'] - df['Close'])) & 
                    ((df['Close'] - df['Low']) / (.001 + df['High'] - df['Low']) > 0.6) & 
                    ((df['Open'] - df['Low']) / (.001 + df['High'] - df['Low']) > 0.6)).astype(int)
-                   
-    # Bullish Engulfing
     df['Bull_Engulf'] = ((df['Close'] > df['Open'].shift(1)) & 
                          (df['Open'] < df['Close'].shift(1)) & 
                          (df['Close'] > df['Open'])).astype(int)
@@ -128,56 +125,45 @@ def get_order_blocks(df, lookback=20):
     except: pass
     return obs
 
-# --- NEW ANALYSIS FUNCTIONS ---
+# --- ANALYSIS FUNCTIONS (FIXED) ---
 
 def analyze_fib(df, lookback=100):
-    """Menghitung level Fibonacci Retracement"""
+    """
+    Menghitung Fibonacci Retracement yang BENAR.
+    Discount Zone itu di bawah 0.5 (Equilibrium).
+    Kita hitung dari High ke Low.
+    """
     recent = df.iloc[-lookback:]
     high = recent['High'].max()
     low = recent['Low'].min()
     diff = high - low
     
-    # Asumsi trend naik jika close terakhir > low + (range/2)
-    trend = "Up" if df['Close'].iloc[-1] > (low + diff/2) else "Down"
-    
     levels = {}
-    if trend == "Up": # Retracement dari bawah ke atas
-        levels['0.0 (Low)'] = low
-        levels['0.236'] = low + (diff * 0.236)
-        levels['0.382'] = low + (diff * 0.382)
-        levels['0.5'] = low + (diff * 0.5)
-        levels['0.618 (Golden)'] = low + (diff * 0.618)
-        levels['0.786'] = low + (diff * 0.786)
-        levels['1.0 (High)'] = high
-    else: # Retracement dari atas ke bawah
-        levels['1.0 (High)'] = high
-        levels['0.786'] = high - (diff * 0.236) # Kebalik untuk visual
-        levels['0.618 (Golden)'] = high - (diff * 0.382)
-        levels['0.5'] = high - (diff * 0.5)
-        levels['0.382'] = high - (diff * 0.618)
-        levels['0.236'] = high - (diff * 0.786)
-        levels['0.0 (Low)'] = low
-        
+    # Standard Retracement Logic: 0% = High, 100% = Low
+    # Kita mau cari harga murah, berarti di antara High (0%) dan Low (100%)
+    
+    levels['0.0 (High)'] = high
+    levels['0.236'] = high - (diff * 0.236)
+    levels['0.382'] = high - (diff * 0.382)
+    levels['0.5 (EQ)'] = high - (diff * 0.5)
+    levels['0.618 (Golden)'] = high - (diff * 0.618)
+    levels['0.786'] = high - (diff * 0.786)
+    levels['1.0 (Low)'] = low
+    
     return levels, high, low
 
 def analyze_double_bottom(df, lookback=50):
-    """Deteksi Double Bottom dalam 50 candle terakhir"""
     recent = df.iloc[-lookback:]
-    # Cari local lows
     lows_idx = argrelextrema(recent['Low'].values, np.less, order=3)[0]
     
     if len(lows_idx) >= 2:
-        # Ambil 2 low terakhir
         l1_idx = lows_idx[-1]
         l2_idx = lows_idx[-2]
         
         p1 = recent['Low'].iloc[l1_idx]
         p2 = recent['Low'].iloc[l2_idx]
         
-        # Syarat Double Bottom: Harga mirip (diff < 1%), dan ada gap waktu
         if abs(p1 - p2) / p1 < 0.01 and l1_idx != l2_idx:
-            # Syarat Konfirmasi: Harga close sekarang sudah di atas leher (neckline)
-            # Neckline kira-kira adalah high di antara dua low tersebut
             between_highs = recent['High'].iloc[l2_idx:l1_idx]
             if not between_highs.empty:
                 neckline = between_highs.max()
@@ -187,45 +173,38 @@ def analyze_double_bottom(df, lookback=50):
     return False, 0
 
 def analyze_hidden_divergence(df):
-    """Deteksi Hidden Bullish Divergence: Price Higher Low, RSI Lower Low"""
     if len(df) < 20: return False
-    
-    # Ambil 2 low terakhir
     lows_idx = argrelextrema(df['Low'].values, np.less, order=3)[0]
     if len(lows_idx) >= 2:
         curr_idx = lows_idx[-1]
         prev_idx = lows_idx[-2]
         
-        # Price Higher Low
         p_curr = df['Low'].iloc[curr_idx]
         p_prev = df['Low'].iloc[prev_idx]
         
-        # RSI Lower Low
         r_curr = df['RSI'].iloc[curr_idx]
         r_prev = df['RSI'].iloc[prev_idx]
         
-        # Hidden Bullish: Price naik (Higher Low), Tapi RSI turun (Lower Low) -> Ini tanda kuat trend continuation
+        # Hidden Bullish: Price Higher Low, RSI Lower Low
         if p_curr > p_prev and r_curr < r_prev:
             return True
             
     return False
 
 def analyze_reversal_candles(df):
-    """Deteksi candle pembalikan di candle terakhir"""
     last = df.iloc[-1]
     patterns = []
     
     if last['Hammer'] == 1: patterns.append("Hammer 🔨")
     if last['Bull_Engulf'] == 1: patterns.append("Bull Engulf 🐂")
     
-    # Doji Detector (Open hampir sama dengan Close)
     body = abs(last['Close'] - last['Open'])
     range_candle = last['High'] - last['Low']
     if range_candle > 0 and body/range_candle < 0.1: patterns.append("Doji ⚖️")
     
     return patterns
 
-# --- 4. CONFLUENCE ENGINE (UPDATED) ---
+# --- 4. CONFLUENCE ENGINE ---
 
 def detailed_analysis(df, struct, obs, fib_levels):
     details = []
@@ -252,18 +231,22 @@ def detailed_analysis(df, struct, obs, fib_levels):
     else:
         details.append({"Factor": "RSI", "Status": "Neutral", "Impact": "0", "Color": "grey"})
 
-    # 4. Zone & Fibs
+    # 4. Zone & Fibs (FIXED LOGIC)
     price = last['Close']
-    # Cek apakah harga di Golden Pocket (0.5 - 0.618)
-    gp_high = fib_levels.get('0.5', 0)
-    gp_low = fib_levels.get('0.618 (Golden)', 0)
+    # Ambil level dari dict
+    gp_level = fib_levels.get('0.618 (Golden)', 0)
+    eq_level = fib_levels.get('0.5 (EQ)', 0)
     
-    if gp_low <= price <= gp_high:
-        score += 2; details.append({"Factor": "Fibonacci", "Status": "Golden Pocket!", "Impact": "+2", "Color": "green"})
-    elif price < fib_levels.get('0.786', 0):
-        score += 1; details.append({"Factor": "Fibonacci", "Status": "Deep Discount", "Impact": "+1", "Color": "green"})
+    # Jika harga di bawah EQ (Discount)
+    if price < eq_level:
+        details.append({"Factor": "Zone", "Status": "Discount", "Impact": "+1", "Color": "green"})
+        score += 1
+        # Jika di Golden Pocket (antara 0.618 dan 0.786 atau di bawahnya)
+        if price <= gp_level:
+            score += 2; details.append({"Factor": "Fibonacci", "Status": "Golden Pocket!", "Impact": "+2", "Color": "green"})
     else:
-        details.append({"Factor": "Fibonacci", "Status": "Extension/Premium", "Impact": "0", "Color": "grey"})
+        details.append({"Factor": "Zone", "Status": "Premium", "Impact": "-1", "Color": "red"})
+        score -= 1 # Kurangi skor kalau beli di mahal
 
     # 5. Order Block
     for ob in obs:
@@ -283,7 +266,7 @@ def detailed_analysis(df, struct, obs, fib_levels):
 
 # --- 5. MAIN APP ---
 
-st.sidebar.title("⚔️ SniperPalmerah")
+st.sidebar.title("⚔️ Grandmaster V6 Fix")
 app_mode = st.sidebar.radio("Mode:", ["🎯 Deep Analysis", "🚀 Accumulation Scanner"], index=0)
 source_opt = st.sidebar.selectbox("Exchange", ['binance', 'gateio', 'mexc', 'bybit', 'kucoin'], index=0)
 
@@ -307,7 +290,7 @@ if app_mode == "🎯 Deep Analysis":
         signals, struct = get_smc_structure(df, order=sens)
         obs = get_order_blocks(df)
         
-        # NEW ANALYSIS CALLS
+        # ANALYSIS CALLS
         fib_levels, swing_h, swing_l = analyze_fib(df)
         is_db, db_neck = analyze_double_bottom(df)
         is_hidden_div = analyze_hidden_divergence(df)
@@ -326,77 +309,66 @@ if app_mode == "🎯 Deep Analysis":
         m3.metric("RSI", f"{last['RSI']:.1f}")
         m4.metric("Action", action)
 
-        # --- RECOMMENDATION SECTION (SPOT) ---
+        # --- RECOMMENDATION SECTION ---
         st.subheader("💡 Spot Recommendation")
         
-        # Determine Entry, SL, TP
-        entry_zone = last['Close']
+        # Logic for displaying recommendation
+        # Jika Harga > EQ (Premium), suruh tunggu turun.
+        # Jika Harga < EQ (Discount), suruh beli.
+        
+        eq_price = fib_levels.get('0.5 (EQ)', 0)
+        gp_price = fib_levels.get('0.618 (Golden)', 0)
         sl_price = struct['last_low'] if struct['last_low'] != 0 else last['Close'] - (last['ATR']*2)
         
-        # Smart TP based on Fibs
-        tp1 = fib_levels.get('0.236', entry_zone)
-        tp2 = fib_levels.get('0.0 (Low)', entry_zone) # This is High if trend up
-        
-        # Logic for displaying recommendation
         rec_html = ""
+        
         if action in ["STRONG BUY", "BUY"]:
             rec_html = f"""
             <div class="alert-buy">
                 <h3>🟢 Rekomendasi: BELI (BUY)</h3>
-                <p><b>Alasan:</b> Skor {score} menunjukkan momentum positif.</p>
-                <p><b>Entry Zone:</b> Market (Sekarang) atau Limit di <b>{fib_levels.get('0.618 (Golden)', 0):.4f}</b> (Golden Pocket)</p>
+                <p><b>Alasan:</b> Harga di Area Diskon / Golden Pocket dengan Skor {score}.</p>
+                <p><b>Entry Zone:</b> Limit di <b>{gp_price:.4f}</b> atau Market sekarang.</p>
                 <p><b>Stop Loss (SL):</b> <b>{sl_price:.4f}</b> (Di bawah Low Structure)</p>
-                <p><b>Take Profit 1 (TP1):</b> <b>{tp1:.4f}</b> (Fib 0.236)</p>
+                <p><b>Take Profit 1 (TP1):</b> <b>{eq_price:.4f}</b> (Equilibrium)</p>
                 <p><b>Take Profit 2 (TP2):</b> <b>{swing_h:.4f}</b> (High Terakhir)</p>
             </div>
             """
-        elif action in ["STRONG SELL", "SELL"]:
-            rec_html = f"""
-            <div class="alert-sell">
-                <h3>🔴 Rekomendasi: JUAL (SELL)</h3>
-                <p><b>Alasan:</b> Indikator menunjukkan pelemahan/momentum turun.</p>
-                <p><b>Action:</b> Ambil Profit atau Cut Loss.</p>
-            </div>
-            """
         else:
-            rec_html = f"""
-            <div class="alert-wait">
-                <h3>⚪ TUNGGU (WAIT)</h3>
-                <p>Konfirmasi belum kuat. Tunggu candle close atau signal struktur.</p>
-                <p>Area diskon favorit: <b>{fib_levels.get('0.618 (Golden)', 0):.4f}</b></p>
-            </div>
-            """
+            # Jika bukan Buy, berarti Wait atau Sell
+            # Cek apakah harga masih mahal (Premium)
+            if last['Close'] > eq_price:
+                rec_html = f"""
+                <div class="alert-wait">
+                    <h3>⚪ TUNGGU (WAIT) - Harga Masih Mahal (Premium)</h3>
+                    <p>Harga saat ini ({last['Close']:.4f}) masih di atas Equilibrium ({eq_price:.4f}).</p>
+                    <p><b>IDEAL ENTRY:</b> Tunggu harga turun ke area <b>{gp_price:.4f}</b> (Golden Pocket) atau <b>{eq_price:.4f}</b>.</p>
+                </div>
+                """
+            else:
+                rec_html = f"""
+                <div class="alert-sell">
+                    <h3>🔴 JUAL / WAIT (Bearish)</h3>
+                    <p>Struktur trend sedang melemah atau sudah di area resistance.</p>
+                </div>
+                """
+                
         st.markdown(rec_html, unsafe_allow_html=True)
         
-        # --- SPECIAL PATTERN DETECTION STATUS ---
+        # --- PATTERN DETECTION ---
         st.subheader("🔍 Pattern Detection")
         cols = st.columns(4)
         
-        # 1. Double Bottom
         db_status = "✅ Terdeteksi" if is_db else "❌ Tidak Ada"
-        db_color = "green" if is_db else "grey"
-        cols[0].markdown(f"**Double Bottom**<br><span style='color:{db_color}'>{db_status}</span>", unsafe_allow_html=True)
+        cols[0].markdown(f"**Double Bottom**<br><span style='color:green'>{db_status}</span>" if is_db else f"**Double Bottom**<br><span style='color:grey'>{db_status}</span>", unsafe_allow_html=True)
         
-        # 2. Hidden Div
         hd_status = "✅ Terdeteksi" if is_hidden_div else "❌ Tidak Ada"
-        hd_color = "green" if is_hidden_div else "grey"
-        cols[1].markdown(f"**Hidden Div Bull**<br><span style='color:{hd_color}'>{hd_status}</span>", unsafe_allow_html=True)
+        cols[1].markdown(f"**Hidden Div Bull**<br><span style='color:green'>{hd_status}</span>" if is_hidden_div else f"**Hidden Div Bull**<br><span style='color:grey'>{hd_status}</span>", unsafe_allow_html=True)
         
-        # 3. Reversal Candle
         rc_text = ", ".join(reversal_candles) if reversal_candles else "❌ Tidak Ada"
         cols[2].markdown(f"**Reversal Candle**<br>{rc_text}", unsafe_allow_html=True)
         
-        # 4. Fib Position
-        fib_pos = "Discount" if last['Close'] < fib_levels.get('0.5', 0) else "Premium"
+        fib_pos = "Discount" if last['Close'] < eq_price else "Premium"
         cols[3].metric("Fib Zone", fib_pos)
-
-        # --- ANALYSIS BREAKDOWN TABLE ---
-        with st.expander("📋 Detail Analisa Lengkap"):
-            table_html = "<table style='width:100%'><thead><tr><th>Factor</th><th>Status</th><th>Impact</th></tr></thead><tbody>"
-            for d in details:
-                table_html += f"<tr><td>{d['Factor']}</td><td>{d['Status']}</td><td style='color:{d['Color']}; font-weight:bold;'>{d['Impact']}</td></tr>"
-            table_html += "</tbody></table>"
-            st.markdown(table_html, unsafe_allow_html=True)
 
         # --- CHARTING ---
         fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.03)
@@ -409,9 +381,10 @@ if app_mode == "🎯 Deep Analysis":
         fig.add_trace(go.Scatter(x=df.index, y=df['EMA_20'], line=dict(color='#FFB300', width=1), name='EMA20'), row=1, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=df['EMA_50'], line=dict(color='#42A5F5', width=1), name='EMA50'), row=1, col=1)
         
-        # FIB LEVELS (Visual)
+        # FIB LEVELS (Visual - Corrected)
+        # Show only relevant levels
         for name, price in fib_levels.items():
-            if name in ['0.5', '0.618 (Golden)', '0.786']:
+            if name in ['0.5 (EQ)', '0.618 (Golden)', '0.786']:
                 color = '#6200EA' if 'Golden' in name else '#B388FF'
                 fig.add_hline(y=price, line_dash="dash", line_color=color, opacity=0.6, 
                               annotation_text=name, annotation_position="right", row=1, col=1)
@@ -423,17 +396,6 @@ if app_mode == "🎯 Deep Analysis":
             fig.add_shape(type="rect", x0=ob['time'], y0=ob['l'], x1=df.index[-1], y1=ob['h'], 
                           line=dict(color=border_color, width=1, dash='dot'), fillcolor=color, row=1, col=1)
         
-        # Pattern Markers
-        # Double Bottom Marker
-        if is_db:
-            fig.add_trace(go.Scatter(x=[df.index[-1]], y=[df['Low'].iloc[-1]], mode='markers',
-                                     marker=dict(symbol='star', size=15, color='gold'), name='Double Bottom'), row=1, col=1)
-        
-        # Reversal Candle Markers
-        if reversal_candles:
-            fig.add_trace(go.Scatter(x=[df.index[-1]], y=[last['Low']], mode='text', 
-                                     text=['🔥'], textfont_size=20, name='Reversal'), row=1, col=1)
-
         # Volume
         colors_vol = ['#26a69a' if c >= o else '#ef5350' for c, o in zip(df['Close'], df['Open'])]
         fig.add_trace(go.Bar(x=df.index, y=df['Volume'], name='Volume', marker_color=colors_vol, opacity=0.4), row=2, col=1)
@@ -484,8 +446,12 @@ else:
                     is_hd = analyze_hidden_divergence(df)
                     last = df.iloc[-1]
                     
-                    # Filter: Minimal salah satu pattern terjadi + RSI Oversold/Normal
-                    if (is_db or is_hd) and last['RSI'] < 60:
+                    # Fib Logic for Scanner
+                    fibs, _, _ = analyze_fib(df)
+                    eq = fibs.get('0.5 (EQ)', 0)
+                    
+                    # Filter: Minimal salah satu pattern + Harga di Diskon
+                    if (is_db or is_hd) and last['Close'] < eq:
                         score = 0
                         if is_db: score += 3
                         if is_hd: score += 3
@@ -494,7 +460,7 @@ else:
                         results.append({
                             'Pair': sym, 'Price': last['Close'], 'Score': score,
                             'Pattern': f"{'DB' if is_db else ''} {'HDiv' if is_hd else ''}".strip(),
-                            'RSI': round(last['RSI'], 1)
+                            'RSI': round(last['RSI'], 1), 'Zone': 'Discount'
                         })
                 except: continue
             
