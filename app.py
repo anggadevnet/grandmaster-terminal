@@ -38,7 +38,15 @@ def get_best_sensitivity(tf):
 @st.cache_data(ttl=1800)
 def get_symbols(ex_id):
     try:
-        ex = getattr(ccxt, ex_id)({'enableRateLimit': True, 'timeout': 15000})
+        # INI RAHASIANYA: Kita set Headers biar kayak browser asli
+        ex = getattr(ccxt, ex_id)({
+            'enableRateLimit': True, 
+            'timeout': 15000,
+            'headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'application/json',
+            }
+        })
         ex.load_markets()
         return sorted([s for s, m in ex.markets.items() if m.get('type') == 'spot' and m.get('quote') == 'USDT' and m.get('active')])
     except Exception as e:
@@ -47,15 +55,28 @@ def get_symbols(ex_id):
 
 def fetch_data(symbol, tf, limit=500, ex_id='binance'):
     try:
-        ex = getattr(ccxt, ex_id)({'enableRateLimit': True, 'timeout': 15000})
+        # INI JUGA DITAMBAHIN HEADERS
+        ex = getattr(ccxt, ex_id)({
+            'enableRateLimit': True, 
+            'timeout': 15000,
+            'headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'application/json',
+            }
+        })
+        
         if tf not in ex.timeframes:
             if tf == '6h': tf = '4h'
+                
         data = ex.fetch_ohlcv(symbol, tf, limit=limit)
         df = pd.DataFrame(data, columns=['time', 'Open', 'High', 'Low', 'Close', 'Volume'])
         df['time'] = pd.to_datetime(df['time'], unit='ms')
         df.set_index('time', inplace=True)
         return df
-    except: return pd.DataFrame()
+    except Exception as e:
+        # Kalau masih error, tampilin error detail biar gue bisa debug
+        st.error(f"Error fetching {symbol}: {e}")
+        return pd.DataFrame()
 
 # --- 3. TECHNICAL & PATTERN CALCULATOR ---
 
@@ -128,20 +149,12 @@ def get_order_blocks(df, lookback=20):
 # --- ANALYSIS FUNCTIONS (FIXED) ---
 
 def analyze_fib(df, lookback=100):
-    """
-    Menghitung Fibonacci Retracement yang BENAR.
-    Discount Zone itu di bawah 0.5 (Equilibrium).
-    Kita hitung dari High ke Low.
-    """
     recent = df.iloc[-lookback:]
     high = recent['High'].max()
     low = recent['Low'].min()
     diff = high - low
     
     levels = {}
-    # Standard Retracement Logic: 0% = High, 100% = Low
-    # Kita mau cari harga murah, berarti di antara High (0%) dan Low (100%)
-    
     levels['0.0 (High)'] = high
     levels['0.236'] = high - (diff * 0.236)
     levels['0.382'] = high - (diff * 0.382)
@@ -185,7 +198,6 @@ def analyze_hidden_divergence(df):
         r_curr = df['RSI'].iloc[curr_idx]
         r_prev = df['RSI'].iloc[prev_idx]
         
-        # Hidden Bullish: Price Higher Low, RSI Lower Low
         if p_curr > p_prev and r_curr < r_prev:
             return True
             
@@ -231,22 +243,19 @@ def detailed_analysis(df, struct, obs, fib_levels):
     else:
         details.append({"Factor": "RSI", "Status": "Neutral", "Impact": "0", "Color": "grey"})
 
-    # 4. Zone & Fibs (FIXED LOGIC)
+    # 4. Zone & Fibs
     price = last['Close']
-    # Ambil level dari dict
     gp_level = fib_levels.get('0.618 (Golden)', 0)
     eq_level = fib_levels.get('0.5 (EQ)', 0)
     
-    # Jika harga di bawah EQ (Discount)
     if price < eq_level:
         details.append({"Factor": "Zone", "Status": "Discount", "Impact": "+1", "Color": "green"})
         score += 1
-        # Jika di Golden Pocket (antara 0.618 dan 0.786 atau di bawahnya)
         if price <= gp_level:
             score += 2; details.append({"Factor": "Fibonacci", "Status": "Golden Pocket!", "Impact": "+2", "Color": "green"})
     else:
         details.append({"Factor": "Zone", "Status": "Premium", "Impact": "-1", "Color": "red"})
-        score -= 1 # Kurangi skor kalau beli di mahal
+        score -= 1
 
     # 5. Order Block
     for ob in obs:
@@ -255,7 +264,6 @@ def detailed_analysis(df, struct, obs, fib_levels):
         if ob['type'] == 'Bear' and (last['High'] >= ob['l']):
             score -= 3; details.append({"Factor": "Order Block", "Status": "Hit Bearish OB", "Impact": "-3", "Color": "red"})
 
-    # Final Action
     action = "WAIT"
     if score >= 6: action = "STRONG BUY"
     elif score >= 4: action = "BUY"
@@ -312,10 +320,6 @@ if app_mode == "🎯 Deep Analysis":
         # --- RECOMMENDATION SECTION ---
         st.subheader("💡 Spot Recommendation")
         
-        # Logic for displaying recommendation
-        # Jika Harga > EQ (Premium), suruh tunggu turun.
-        # Jika Harga < EQ (Discount), suruh beli.
-        
         eq_price = fib_levels.get('0.5 (EQ)', 0)
         gp_price = fib_levels.get('0.618 (Golden)', 0)
         sl_price = struct['last_low'] if struct['last_low'] != 0 else last['Close'] - (last['ATR']*2)
@@ -334,8 +338,6 @@ if app_mode == "🎯 Deep Analysis":
             </div>
             """
         else:
-            # Jika bukan Buy, berarti Wait atau Sell
-            # Cek apakah harga masih mahal (Premium)
             if last['Close'] > eq_price:
                 rec_html = f"""
                 <div class="alert-wait">
@@ -381,8 +383,7 @@ if app_mode == "🎯 Deep Analysis":
         fig.add_trace(go.Scatter(x=df.index, y=df['EMA_20'], line=dict(color='#FFB300', width=1), name='EMA20'), row=1, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=df['EMA_50'], line=dict(color='#42A5F5', width=1), name='EMA50'), row=1, col=1)
         
-        # FIB LEVELS (Visual - Corrected)
-        # Show only relevant levels
+        # FIB LEVELS
         for name, price in fib_levels.items():
             if name in ['0.5 (EQ)', '0.618 (Golden)', '0.786']:
                 color = '#6200EA' if 'Golden' in name else '#B388FF'
@@ -404,7 +405,7 @@ if app_mode == "🎯 Deep Analysis":
         st.plotly_chart(fig, use_container_width=True)
         
     else:
-        st.error("Data fetch failed.")
+        st.error("Data fetch failed. Cek koneksi atau ganti exchange.")
 
 # ==========================================
 # MODE 2: SCANNER
@@ -425,7 +426,13 @@ else:
             status = st.empty()
             results = []
             
-            ex = getattr(ccxt, source_opt)({'enableRateLimit': True})
+            # Init exchange sekali aja biar cepet
+            ex = getattr(ccxt, source_opt)({
+                'enableRateLimit': True, 
+                'headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                }
+            })
             ex.load_markets()
             tickers = ex.fetch_tickers()
             pairs = sorted([t for s, t in tickers.items() if s.endswith('/USDT')], key=lambda x: x.get('quoteVolume', 0), reverse=True)[:limit]
@@ -436,21 +443,19 @@ else:
                 status.text(f"Scanning {sym}...")
                 
                 try:
+                    # Gunakan fungsi fetch_data yang udah di-fix
                     df = fetch_data(sym, scan_tf, ex_id=source_opt)
                     if df.empty or len(df) < 50: continue
                     
                     df = calculate_all(df)
                     
-                    # Logic Scanner
                     is_db, _ = analyze_double_bottom(df)
                     is_hd = analyze_hidden_divergence(df)
                     last = df.iloc[-1]
                     
-                    # Fib Logic for Scanner
                     fibs, _, _ = analyze_fib(df)
                     eq = fibs.get('0.5 (EQ)', 0)
                     
-                    # Filter: Minimal salah satu pattern + Harga di Diskon
                     if (is_db or is_hd) and last['Close'] < eq:
                         score = 0
                         if is_db: score += 3
