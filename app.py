@@ -1187,7 +1187,7 @@ def plot_ichimochart(df, symbol, nearest_support, nearest_resistance):
 # ======================== STREAMLIT UI ========================
 with st.sidebar:
     st.header("⚙️ Auto Scan Settings")
-    exchange_name = st.selectbox("Exchange", ["binance", "bybit", "okx", "kucoin"], index=0)
+    exchange_name = st.selectbox("Exchange", ["okx", "kucoin", "binance", "bybit"], index=0)
     scan_limit = st.slider("Jumlah coin di-scan", 50, 300, 150)
     auto_refresh_interval = st.slider("Auto-refresh (menit)", 5, 60, 30, help="Bot akan scan ulang otomatis setiap X menit")
     use_btc_filter = st.checkbox("Filter dengan BTC trend", value=True)
