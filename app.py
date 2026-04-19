@@ -11,8 +11,8 @@ warnings.filterwarnings('ignore')
 
 # ======================== KONFIGURASI ========================
 st.set_page_config(page_title="Crypto Accumulation Scanner", layout="wide")
-st.title("🐋 Crypto Accumulation Scanner + Breakout Predictor")
-st.markdown("Auto scan coin yang sedang diakumulasi whale + prediksi breakout & pump")
+st.title("🐋 Crypto Accumulation Scanner + Ichimoku Deep Analysis")
+st.markdown("Auto scan coin yang sedang diakumulasi whale, ditambah manual analysis, pola chart lanjutan, dan SOP 5 langkah.")
 
 # ======================== CACHED FUNCTIONS ========================
 @st.cache_data(ttl=3600)
@@ -75,35 +75,34 @@ def calculate_indicators(df):
         df['MA20'] = df['close'].rolling(20).mean()
         df['MA50'] = df['close'].rolling(50).mean()
         df['MA200'] = df['close'].rolling(200).mean()
-        
+        # RSI
         delta = df['close'].diff()
         gain = delta.where(delta > 0, 0).rolling(14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
         rs = gain / loss
         df['RSI'] = 100 - (100 / (1 + rs))
-        
+        # MACD
         exp12 = df['close'].ewm(span=12, adjust=False).mean()
         exp26 = df['close'].ewm(span=26, adjust=False).mean()
         df['MACD'] = exp12 - exp26
         df['Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
         df['MACD_Hist'] = df['MACD'] - df['Signal']
-        
+        # Volume
         df['Volume_MA20'] = df['volume'].rolling(20).mean()
         df['Volume_Ratio'] = df['volume'] / df['Volume_MA20'].replace(0, np.nan)
-        
+        # ATR
         high_low = df['high'] - df['low']
         high_close = np.abs(df['high'] - df['close'].shift())
         low_close = np.abs(df['low'] - df['close'].shift())
         ranges = pd.concat([high_low, high_close, low_close], axis=1)
         true_range = np.max(ranges, axis=1)
         df['ATR'] = true_range.rolling(14).mean()
-        
+        # Bollinger Bands
         df['BB_Middle'] = df['close'].rolling(20).mean()
         bb_std = df['close'].rolling(20).std()
         df['BB_Upper'] = df['BB_Middle'] + 2 * bb_std
         df['BB_Lower'] = df['BB_Middle'] - 2 * bb_std
         df['BB_Width'] = (df['BB_Upper'] - df['BB_Lower']) / df['BB_Middle']
-        
         return df
     except Exception as e:
         print(f"Error in calculate_indicators: {e}")
@@ -120,6 +119,7 @@ def calculate_ichimoku(df, tenkan=9, kijun=26, senkou_b=52):
         senkou_b_low = df['low'].rolling(senkou_b).min()
         df['senkou_b'] = ((senkou_b_high + senkou_b_low) / 2).shift(kijun)
         df['chikou'] = df['close'].shift(-kijun)
+        # Future cloud
         df['future_senkou_a'] = ((df['tenkan'] + df['kijun']) / 2)
         df['future_senkou_b'] = ((df['high'].rolling(senkou_b).max() + df['low'].rolling(senkou_b).min()) / 2)
         return df
@@ -141,7 +141,7 @@ def calculate_obv(df):
                 obv.append(obv[-1])
         df['OBV'] = obv
         if len(df) >= 20:
-            slope = (df['OBV'].iloc[-1] - df['OBV'].iloc[-20]) / (abs(df['OBV'].iloc[-20]) + 1)
+            slope = (df['OBV'].iloc[-1] - df['OBV'].iloc[-20]) / (df['OBV'].iloc[-20] if df['OBV'].iloc[-20] != 0 else 1)
             df['OBV_trend'] = slope > 0
         else:
             df['OBV_trend'] = False
@@ -354,13 +354,13 @@ def get_momentum_status(df, tk_cross, is_squeeze, is_accum, rsi, volume_ratio, i
         if is_breakout_confirmed and tk_cross and rsi > 50:
             return "🚀 BREAKOUT CONFIRMED", "Harga sudah breakout, ikuti momentum dengan trailing stop"
         elif tk_cross and is_squeeze and rsi > 50:
-            return "🔮 READY TO LAUNCH", "TK Cross ✅, Squeeze ✅, RSI > 50 → siap meledak"
+            return "🔮 READY TO LAUNCH", "TK Cross ✅, Squeeze ✅, RSI > 50 → siap meledak, pasang posisi agresif"
         elif tk_cross and rsi > 50:
-            return "👀 WAITING FOR BREAKOUT", "TK Cross ✅, RSI > 50 → tunggu breakout"
+            return "👀 WAITING FOR BREAKOUT", "TK Cross ✅, RSI > 50 → tunggu breakout level resistance"
         elif is_accum or (rsi < 40 and volume_ratio < 0.7):
-            return "⏳ ACCUMULATION", "RSI < 40, Volume rendah → entry di support"
+            return "⏳ ACCUMULATION", "RSI < 40, Volume rendah → entry di support terjauh"
         elif is_squeeze:
-            return "🔮 SQUEEZE DETECTED", "BBW menyempit → potensi ledakan harga"
+            return "🔮 SQUEEZE DETECTED", "BBW menyempit → potensi ledakan harga dalam waktu dekat"
         else:
             return "⚖️ NEUTRAL", "Menunggu konfirmasi"
     except:
@@ -368,7 +368,7 @@ def get_momentum_status(df, tk_cross, is_squeeze, is_accum, rsi, volume_ratio, i
 
 def calculate_fib_levels(df, lookback=50):
     if df is None or len(df) < lookback:
-        return None, None, None
+        return None
     try:
         recent = df.tail(lookback)
         swing_high = recent['high'].max()
@@ -508,181 +508,131 @@ def detect_macd_divergence(df):
     except:
         return None
 
-# ======================== FUNGSI PREDIKSI BARU ========================
+# ======================== DETEKSI POLA LANJUTAN ========================
+def find_swing_points(df, lookback=5):
+    swings_high = []
+    swings_low = []
+    for i in range(lookback, len(df) - lookback):
+        if df['high'].iloc[i] == df['high'].iloc[i-lookback:i+lookback+1].max():
+            swings_high.append((i, df['high'].iloc[i]))
+        if df['low'].iloc[i] == df['low'].iloc[i-lookback:i+lookback+1].min():
+            swings_low.append((i, df['low'].iloc[i]))
+    return swings_high, swings_low
 
-def detect_whale_accumulation_zones(df, lookback=50):
-    if df is None or len(df) < lookback:
-        return None, False, False
-    try:
-        price_range = df['high'].max() - df['low'].min()
-        bin_size = price_range / 15 if price_range > 0 else 0.01
-        bins = np.arange(df['low'].min(), df['high'].max(), bin_size)
-        
-        volume_by_price = []
-        for i in range(len(bins)-1):
-            mask = (df['close'] >= bins[i]) & (df['close'] < bins[i+1])
-            vol_sum = df.loc[mask, 'volume'].sum()
-            volume_by_price.append((bins[i], vol_sum))
-        
-        if volume_by_price:
-            poc = max(volume_by_price, key=lambda x: x[1])[0]
-        else:
-            poc = df['close'].iloc[-1]
-        
-        recent_vol = df['volume'].tail(lookback)
-        vol_avg = recent_vol.mean()
-        vol_std = recent_vol.std()
-        
-        high_vol_candles = df[df['volume'] > vol_avg + vol_std]
-        if len(high_vol_candles) > 0:
-            high_vol_range = high_vol_candles['close'].max() - high_vol_candles['close'].min()
-            range_pct = high_vol_range / df['close'].iloc[-1] if df['close'].iloc[-1] != 0 else 1
-            is_accumulating = range_pct < 0.05 and len(high_vol_candles) > lookback * 0.25
-        else:
-            is_accumulating = False
-        
-        is_stealth_accum = False
-        if len(df) >= 40:
-            try:
-                vol_slope = np.polyfit(range(20), df['volume'].tail(20).values, 1)[0]
-                price_slope = np.polyfit(range(20), df['close'].tail(20).values, 1)[0]
-                is_stealth_accum = vol_slope > 0 and abs(price_slope) < 0.002
-            except:
-                pass
-        
-        return poc, is_accumulating, is_stealth_accum
-    except:
-        return None, False, False
+def detect_elliott_wave(df):
+    if len(df) < 100:
+        return False, "Data tidak cukup"
+    swings_high, swings_low = find_swing_points(df, lookback=3)
+    if len(swings_high) < 5 or len(swings_low) < 5:
+        return False, "Tidak cukup swing point"
+    all_swings = sorted(swings_high + swings_low, key=lambda x: x[0])
+    recent_swings = []
+    for idx, price in all_swings[-15:]:
+        recent_swings.append((idx, price))
+    is_alternating = True
+    for i in range(1, len(recent_swings)):
+        if i > 0:
+            prev_is_high = recent_swings[i-1][1] > df['close'].iloc[recent_swings[i-1][0]]
+            curr_is_high = recent_swings[i][1] > df['close'].iloc[recent_swings[i][0]]
+            if prev_is_high == curr_is_high:
+                is_alternating = False
+                break
+    if len(recent_swings) >= 5 and is_alternating:
+        last_5 = recent_swings[-5:]
+        prices = [p for _, p in last_5]
+        if prices[0] < prices[2] < prices[4] and prices[1] < prices[3]:
+            return True, "Elliott Wave: 5 gelombang impuls (bullish) terdeteksi"
+        elif prices[0] > prices[2] > prices[4] and prices[1] > prices[3]:
+            return True, "Elliott Wave: 5 gelombang impuls (bearish) terdeteksi"
+    return False, "Tidak terdeteksi"
 
-def predict_breakout_probability(df):
-    if df is None or len(df) < 50:
-        return 0, "Unknown", 0, []
-    try:
-        score = 0
-        reasons = []
-        
-        is_squeeze, squeeze_pct = detect_volatility_squeeze(df)
-        if is_squeeze:
-            score += 30
-            reasons.append(f"Volatility Squeeze ({squeeze_pct}%)")
-        
-        has_pre, vol_ratio = detect_volume_pre_breakout(df)
-        if has_pre:
-            score += 25
-            reasons.append(f"Pre-breakout volume ({vol_ratio}x)")
-        
-        last = df.iloc[-1]
-        if 'BB_Upper' in last and last['close'] > last['BB_Middle']:
-            score += 10
-            reasons.append("Harga di atas BB Middle")
-        
-        if 'tenkan' in df and df['tenkan'].iloc[-1] > df['kijun'].iloc[-1]:
-            score += 15
-            reasons.append("Tenkan > Kijun (Golden Cross)")
-        
-        if 'OBV' in df and len(df) >= 20:
-            obv_change = (df['OBV'].iloc[-1] - df['OBV'].iloc[-20]) / (abs(df['OBV'].iloc[-20]) + 1)
-            price_change = (df['close'].iloc[-1] - df['close'].iloc[-20]) / df['close'].iloc[-20]
-            if obv_change > 0.03 and abs(price_change) < 0.01:
-                score += 20
-                reasons.append("OBV naik, harga flat (bullish divergence)")
-        
-        if score > 50:
-            direction = "⬆️ BULLISH" if last['close'] > last.get('MA50', last['close']) else "⬇️ BEARISH"
-        else:
-            direction = "LOW CONFIDENCE"
-        
-        est_hours = 24 if not is_squeeze else max(4, min(24, 8 + (50 - squeeze_pct) / 5))
-        
-        return min(score, 95), direction, round(est_hours, 1), reasons
-    except:
-        return 0, "Unknown", 24, []
+def detect_triangle(df, lookback=30):
+    if len(df) < lookback:
+        return False, "Data tidak cukup"
+    recent = df.tail(lookback)
+    highs = recent['high'].values
+    lows = recent['low'].values
+    x = np.arange(len(highs))
+    slope_high, intercept_high = np.polyfit(x, highs, 1)
+    slope_low, intercept_low = np.polyfit(x, lows, 1)
+    is_converging = abs(slope_high) < abs(slope_low)
+    if not is_converging:
+        return False, "Tidak konvergen"
+    high_line = slope_high * x + intercept_high
+    low_line = slope_low * x + intercept_low
+    distance = high_line - low_line
+    is_narrowing = distance[-1] < distance[0] * 0.7
+    if not is_narrowing:
+        return False, "Tidak menyempit"
+    if slope_high < 0 and slope_low < 0:
+        return True, "Symmetrical Triangle (konvergen) - potensi breakout"
+    elif slope_high < 0 and abs(slope_low) < 0.01:
+        return True, "Descending Triangle - potensi breakdown"
+    elif abs(slope_high) < 0.01 and slope_low > 0:
+        return True, "Ascending Triangle - potensi breakout"
+    else:
+        return True, f"Triangle terdeteksi (slope atas: {slope_high:.4f}, slope bawah: {slope_low:.4f})"
 
-def detect_sudden_pump_setup(df, lookback=10):
-    if df is None or len(df) < lookback + 3:
-        return False, []
-    signals = []
-    try:
-        last = df.iloc[-1]
-        
-        if 'Volume_Ratio' in df:
-            low_vol = (df['Volume_Ratio'].tail(lookback) < 0.6).sum()
-            if low_vol > lookback * 0.5:
-                signals.append("Quiet period (volume rendah)")
-        
-        small_body = 0
-        for i in range(1, min(6, len(df))):
-            body = abs(df['close'].iloc[-i] - df['open'].iloc[-i])
-            candle_range = df['high'].iloc[-i] - df['low'].iloc[-i]
-            if candle_range > 0 and body / candle_range < 0.3:
-                small_body += 1
-        if small_body >= 3:
-            signals.append(f"{small_body}/5 candle dengan body kecil")
-        
-        if 'BB_Width' in df and df['BB_Width'].iloc[-1] * 100 < 5:
-            signals.append("BB sangat sempit - siap ekspansi")
-        
-        if len(df) > 20 and last['low'] <= df['low'].tail(20).min() * 1.01:
-            signals.append("Liquidity sweep terdeteksi")
-        
-        return len(signals) >= 2, signals
-    except:
-        return False, []
+def detect_flag_pennant(df, lookback=30):
+    if len(df) < lookback:
+        return False, "Data tidak cukup"
+    recent = df.tail(lookback)
+    first_5 = recent.iloc[:5]
+    last_20 = recent.iloc[-20:]
+    pole_change = (first_5['close'].iloc[-1] - first_5['close'].iloc[0]) / first_5['close'].iloc[0]
+    is_pole = abs(pole_change) > 0.10
+    if not is_pole:
+        return False, "Tidak ada pergerakan tajam (pole)"
+    flag_range = (last_20['high'].max() - last_20['low'].min()) / last_20['low'].min()
+    is_flag = flag_range < 0.10
+    if is_flag:
+        direction = "bullish" if pole_change > 0 else "bearish"
+        return True, f"Flag/Pennant ({direction}) - konsolidasi setelah pergerakan tajam"
+    return False, "Konsolidasi tidak terdeteksi"
 
-def calculate_accumulation_score(df):
-    if df is None or len(df) < 50:
-        return 0, []
-    score = 0
-    reasons = []
-    try:
-        if 'OBV' in df:
-            obv_slope = (df['OBV'].iloc[-1] - df['OBV'].iloc[-30]) / (abs(df['OBV'].iloc[-30]) + 1)
-            if obv_slope > 0.05:
-                score += 25
-                reasons.append("OBV strong uptrend (+25)")
-            elif obv_slope > 0:
-                score += 15
-                reasons.append("OBV uptrend (+15)")
-        
-        vol_ratio = df['Volume_Ratio'].tail(20).mean() if 'Volume_Ratio' in df else 1
-        price_change = (df['close'].iloc[-1] - df['close'].iloc[-20]) / df['close'].iloc[-20]
-        if vol_ratio < 0.7 and abs(price_change) < 0.05:
-            score += 20
-            reasons.append(f"Volume turun ({vol_ratio:.2f}x), harga flat (+20)")
-        
-        if vsa_low_spread_high_volume(df):
-            score += 15
-            reasons.append("VSA: Low spread + High volume (+15)")
-        
-        _, is_accum, is_stealth = detect_whale_accumulation_zones(df)
-        if is_accum:
-            score += 15
-            reasons.append("Whale accumulation zone (+15)")
-        elif is_stealth:
-            score += 10
-            reasons.append("Stealth accumulation pattern (+10)")
-        
-        support, _ = get_support_resistance_levels(df, df['close'].iloc[-1])
-        bounce = sum(1 for i in range(1, min(11, len(df))) if abs(df['low'].iloc[-i] - support) / support < 0.01)
-        if bounce >= 3:
-            score += 10
-            reasons.append(f"Support holding ({bounce}x bounce) (+10)")
-        
-        recent_range = (df['high'].tail(30).max() - df['low'].tail(30).min()) / df['close'].iloc[-1]
-        if recent_range < 0.08:
-            score += 10
-            reasons.append(f"Range sempit ({recent_range:.1%}) (+10)")
-        
-        return min(score, 100), reasons
-    except:
-        return 0, []
+def detect_head_shoulders(df, lookback=60):
+    if len(df) < lookback:
+        return False, "Data tidak cukup"
+    swings_high, swings_low = find_swing_points(df, lookback=3)
+    if len(swings_high) < 5:
+        return False, "Tidak cukup swing point"
+    recent_highs = sorted(swings_high, key=lambda x: x[0])[-5:]
+    if len(recent_highs) < 5:
+        return False, "Tidak cukup swing high"
+    prices = [p for _, p in recent_highs]
+    if prices[1] > prices[0] and prices[1] > prices[2] and prices[3] > prices[2] and prices[3] < prices[1]:
+        return True, "Head & Shoulders (bearish reversal) terdeteksi"
+    recent_lows = sorted(swings_low, key=lambda x: x[0])[-5:]
+    if len(recent_lows) >= 5:
+        low_prices = [p for _, p in recent_lows]
+        if low_prices[1] < low_prices[0] and low_prices[1] < low_prices[2] and low_prices[3] < low_prices[2] and low_prices[3] > low_prices[1]:
+            return True, "Inverse Head & Shoulders (bullish reversal) terdeteksi"
+    return False, "Tidak terdeteksi"
 
-# ======================== FUNGSI ANALISIS UTAMA ========================
+def detect_consolidation_breakout(df, lookback=20):
+    if len(df) < lookback:
+        return False, "Data tidak cukup"
+    recent = df.tail(lookback)
+    price_range = (recent['high'].max() - recent['low'].min()) / recent['low'].min()
+    is_consolidating = price_range < 0.10
+    if not is_consolidating:
+        return False, "Tidak dalam konsolidasi"
+    last_close = df['close'].iloc[-1]
+    last_open = df['open'].iloc[-1]
+    range_high = recent['high'].max()
+    range_low = recent['low'].min()
+    if last_close > range_high and last_close > last_open:
+        return True, f"Breakout resistance! Harga tembus {range_high:.8f} setelah konsolidasi"
+    elif last_close < range_low and last_close < last_open:
+        return True, f"Breakdown support! Harga tembus {range_low:.8f} setelah konsolidasi"
+    return False, "Belum breakout"
 
-def analyze_coin_deep(symbol, exchange_name):
+# ======================== FUNGSI ANALISIS ========================
+def analyze_coin_deep(symbol, exchange_name, include_dxy=False):
     try:
         daily = fetch_ohlcv_cached(symbol, exchange_name, '1d', limit=200)
         if daily is None or len(daily) < 50:
+            st.error(f"Data tidak cukup untuk {symbol}")
             return None
 
         daily = calculate_indicators(daily)
@@ -702,72 +652,95 @@ def analyze_coin_deep(symbol, exchange_name):
         nearest_support, nearest_resistance = get_support_resistance_levels(daily, current_price)
         liquidity_zone, swing_low = liquidity_grab_level(daily)
 
-        conservative_entry = nearest_support if nearest_support < current_price else current_price
+        if nearest_support < current_price:
+            conservative_entry = nearest_support
+        else:
+            conservative_entry = current_price
+
         atr_value = last['ATR'] if not pd.isna(last['ATR']) else conservative_entry * 0.02
         stop_loss = get_tight_stop_loss(daily, current_price, conservative_entry)
         
-        fib_levels, _, _ = calculate_fib_levels(tf_4h, lookback=50) if tf_4h is not None else (None, None, None)
+        fib_levels, swing_high, swing_low = calculate_fib_levels(tf_4h, lookback=50) if tf_4h is not None else (None, None, None)
         fib_618 = fib_levels['0.618'] if fib_levels else nearest_resistance
         aggressive_entry = fib_618 if fib_618 and fib_618 > current_price else nearest_resistance
         is_breakout_confirmed = current_price > aggressive_entry
         
         tp1 = conservative_entry + atr_value * 2.0
         tp2 = conservative_entry + atr_value * 3.0
-        rr = (tp1 - conservative_entry) / (conservative_entry - stop_loss) if conservative_entry - stop_loss > 0 else 0
+        risk = conservative_entry - stop_loss
+        reward = tp1 - conservative_entry
+        rr = reward / risk if risk > 0 else 0
 
-        # PREDIKSI BARU
-        breakout_prob, breakout_dir, breakout_hours, breakout_reasons = predict_breakout_probability(daily)
-        is_pump_primed, pump_signals = detect_sudden_pump_setup(daily)
-        accum_score, accum_details = calculate_accumulation_score(daily)
-        poc_zone, is_whale_accum, is_stealth_accum = detect_whale_accumulation_zones(daily)
-        
-        # SKOR TEKNIKAL
         score = 0
         reasons = []
 
         if is_accum:
             score += 2
             reasons.append(acc_reason)
+
         if last['close'] > last['MA200']:
             score += 1
-            reasons.append("Harga di atas MA200")
+            reasons.append("Harga di atas MA200 (bullish jangka panjang)")
         if last['close'] > last['MA50']:
             score += 1
-            reasons.append("Harga di atas MA50")
+            reasons.append("Harga di atas MA50 (trend naik)")
+        else:
+            reasons.append("Harga di bawah MA50 (trend netral/bearish)")
+
+        if last['close'] > last['MA50'] and (last['close'] < last['senkou_a'] or last['close'] < last['senkou_b']):
+            reasons.append("⚠️ Harga di atas MA50 tapi di bawah Cloud → fase konsolidasi, menunggu breakout.")
+
         if 30 <= last['RSI'] <= 70:
             score += 0.5
             reasons.append(f"RSI {last['RSI']:.1f} (netral)")
+        elif last['RSI'] < 30:
+            reasons.append(f"RSI {last['RSI']:.1f} (oversold, potensi reversal)")
+        else:
+            reasons.append(f"RSI {last['RSI']:.1f} (overbought, hati-hati)")
+
         if last['Volume_Ratio'] < 0.7:
             score += 0.5
             reasons.append("Volume rendah (potensi akumulasi)")
+        elif last['Volume_Ratio'] > 2.0:
+            reasons.append(f"Volume spike ({last['Volume_Ratio']:.1f}x rata-rata)")
+
         if last['MACD'] > last['Signal']:
             score += 1
-            reasons.append("MACD bullish")
+            reasons.append("MACD bullish (momentum positif)")
 
         is_above_cloud = (last['close'] > last['senkou_a'] and last['close'] > last['senkou_b'])
         cloud_thick = abs(last['senkou_a'] - last['senkou_b']) / last['close']
         
         if is_above_cloud:
+            if cloud_thick > 0.02:
+                reasons.append(f"Cloud tebal ({cloud_thick:.1%}) → support kuat (harga di atas)")
+            else:
+                reasons.append(f"Cloud tipis ({cloud_thick:.1%}) → mudah ditembus (harga di atas)")
             score += 1
-            reasons.append("Harga di atas Cloud (bullish)")
+            reasons.append("Harga di atas Cloud Ichimoku (bullish)")
         else:
-            reasons.append(f"⚠️ Cloud tebal ({cloud_thick:.1%}) → Atap Beton")
-            reasons.append("Harga di bawah Cloud (bearish)")
+            if cloud_thick > 0.02:
+                reasons.append(f"⚠️ Cloud tebal ({cloud_thick:.1%}) → Strong Resistance (Atap Beton) karena harga di bawah")
+                if aggressive_entry < last['senkou_a']:
+                    reasons.append(f"⚠️ Peringatan: Aggressive Entry ({aggressive_entry:.8f}) berada di bawah Atap Beton → ruang gerak terbatas")
+            else:
+                reasons.append(f"Cloud tipis ({cloud_thick:.1%}) → resistance lemah")
+            reasons.append("Harga di bawah Cloud Ichimoku (bearish)")
 
         tk_cross = last['tenkan'] > last['kijun']
         if tk_cross:
             score += 0.5
-            reasons.append("✅ Tenkan > Kijun (Golden Cross)")
+            reasons.append("✅ Tenkan di atas Kijun (Golden Cross) → mesin starter menyala")
         else:
-            reasons.append("⚠️ Tenkan-Kijun: Belum Golden Cross")
+            reasons.append("⚠️ Tenkan-Kijun: Belum Golden Cross → harga cenderung sideways atau lanjut turun")
 
         chikou_ok = chikou_confirmation(daily)
         chikou_status = "Above" if chikou_ok else "Below"
         if chikou_ok:
             score += 0.5
-            reasons.append("Chikou di atas harga (bullish)")
+            reasons.append("Chikou Span di atas harga 26 periode lalu (konfirmasi bullish)")
         else:
-            reasons.append("Chikou di bawah harga (resistensi)")
+            reasons.append("Chikou Span di bawah harga (resistensi potensial)")
 
         chikou_clear, chikou_msg = chikou_clearance(daily)
         if chikou_clear:
@@ -777,135 +750,263 @@ def analyze_coin_deep(symbol, exchange_name):
             reasons.append(f"⚠️ Chikou: {chikou_msg}")
 
         future_kumo = future_kumo_status(daily)
+        has_twist, twist_msg = detect_future_cloud_twist(daily)
+        
         if future_kumo == "Bullish (Hijau)":
             score += 0.5
-            reasons.append(f"Future Cloud: {future_kumo}")
+            reasons.append(f"Future Cloud: {future_kumo} (bullish outlook)")
+        elif future_kumo == "Bearish (Merah)":
+            if has_twist:
+                reasons.append(f"Future Cloud: {future_kumo} tapi MENYEMPIT → {twist_msg}")
+            else:
+                reasons.append(f"Future Cloud: {future_kumo}")
 
-        if vsa_low_spread_high_volume(daily):
+        vsa_signal = vsa_low_spread_high_volume(daily)
+        if vsa_signal:
             score += 0.5
-            reasons.append("VSA: Low spread high volume")
+            reasons.append("Low spread high volume (suplai diserap)")
 
         if daily['OBV_trend'].iloc[-1]:
             score += 0.5
             reasons.append("OBV naik (akumulasi)")
+        else:
+            reasons.append("OBV flat/turun (belum ada akumulasi)")
 
         is_squeeze, squeeze_pct = detect_volatility_squeeze(daily)
         if is_squeeze:
-            reasons.append(f"⚠️ Squeeze: BBW menyempit {squeeze_pct}%")
+            reasons.append(f"⚠️ Volatility Squeeze: BBW menyempit {squeeze_pct}% → potensi ledakan harga")
             score += 0.5
 
-        has_pre, pre_vol = detect_volume_pre_breakout(daily)
-        if has_pre:
-            reasons.append(f"⚠️ Volume pre-breakout {pre_vol}x")
+        has_pre_breakout, pre_breakout_vol = detect_volume_pre_breakout(daily)
+        if has_pre_breakout:
+            reasons.append(f"⚠️ Volume Pre-Breakout: Volume {pre_breakout_vol}x rata-rata tapi harga belum naik → Whale loading")
             score += 0.5
 
         retest_level, retest_name = detect_buy_the_retest(daily, tk_cross)
         if retest_level:
-            reasons.append(f"✅ Buy the Retest: {retest_name} ({retest_level:.8f})")
+            reasons.append(f"✅ Buy the Retest: Harga mendekati {retest_name} ({retest_level:.8f}) → dynamic support")
 
-        momentum_status, _ = get_momentum_status(daily, tk_cross, is_squeeze, is_accum, last['RSI'], last['Volume_Ratio'], is_breakout_confirmed)
-        reasons.append(f"📊 Momentum: {momentum_status}")
+        momentum_status, momentum_desc = get_momentum_status(
+            daily, tk_cross, is_squeeze, is_accum, last['RSI'], last['Volume_Ratio'], is_breakout_confirmed
+        )
+        reasons.append(f"📊 Momentum Status: {momentum_status} - {momentum_desc}")
 
         hh, hl = detect_hh_hl(daily)
         if hl:
             score += 0.5
-            reasons.append("Higher Low terbentuk")
+            reasons.append("Higher Low terbentuk (struktur bullish)")
         if hh:
             score += 0.5
-            reasons.append("Higher High terbentuk")
+            reasons.append("Higher High terbentuk (trend naik)")
 
         if detect_double_bottom(daily):
             score += 1
-            reasons.append("Pola Double Bottom")
+            reasons.append("Pola Double Bottom terdeteksi")
+
         if detect_bullish_flag(daily):
             score += 1
-            reasons.append("Pola Bullish Flag")
+            reasons.append("Pola Bullish Flag terdeteksi (potensi lanjutan)")
+
         if detect_falling_wedge(daily):
             score += 0.5
-            reasons.append("Pola Falling Wedge")
-        if detect_rsi_divergence(daily):
+            reasons.append("Pola Falling Wedge terdeteksi (potensi reversal)")
+
+        rsi_div = detect_rsi_divergence(daily)
+        if rsi_div:
             score += 1
-            reasons.append("RSI Divergence")
-        if detect_macd_divergence(daily):
+            reasons.append(rsi_div)
+
+        macd_div = detect_macd_divergence(daily)
+        if macd_div:
             score += 1
-            reasons.append("MACD Divergence")
-        
+            reasons.append(macd_div)
+
         patterns = detect_candlestick_patterns(daily)
         if patterns:
             score += 0.5
             reasons.append(f"Pola candlestick: {', '.join(patterns)}")
+
         if volume_spike_recent(daily):
             score += 0.5
-            reasons.append("Volume spike dalam 5 candle")
+            reasons.append("⚠️ Volume spike dalam 5 candle terakhir → potensi markup")
 
+        fib_text = None
+        if fib_levels:
+            fib_text = f"📊 Level Fib H4: 0.618={fib_618:.8f}, 0.5={fib_levels['0.5']:.8f}, 0.382={fib_levels['0.382']:.8f}"
+            reasons.append(fib_text)
+
+        # Deteksi pola di timeframe 4H
+        if tf_4h is not None and len(tf_4h) >= 100:
+            ew_detected, ew_msg = detect_elliott_wave(tf_4h)
+            if ew_detected:
+                reasons.append(f"📈 Elliott Wave (4H): {ew_msg}")
+                score += 1.0
+            
+            tri_detected, tri_msg = detect_triangle(tf_4h)
+            if tri_detected:
+                reasons.append(f"📐 Triangle (4H): {tri_msg}")
+                score += 0.5
+            
+            flag_detected, flag_msg = detect_flag_pennant(tf_4h)
+            if flag_detected:
+                reasons.append(f"🚩 Flag/Pennant (4H): {flag_msg}")
+                score += 0.5
+            
+            hs_detected, hs_msg = detect_head_shoulders(tf_4h)
+            if hs_detected:
+                if "Inverse" in hs_msg:
+                    reasons.append(f"🧢 Inverse Head & Shoulders (4H): {hs_msg}")
+                    score += 1.0
+                else:
+                    reasons.append(f"🧢 Head & Shoulders (4H): {hs_msg}")
+                    score -= 0.5
+            
+            breakout_detected, breakout_msg = detect_consolidation_breakout(tf_4h)
+            if breakout_detected:
+                reasons.append(f"💥 Breakout (4H): {breakout_msg}")
+                score += 1.0
+
+        # Deteksi pola di timeframe 1D
+        if daily is not None and len(daily) >= 100:
+            ew_detected_d, ew_msg_d = detect_elliott_wave(daily)
+            if ew_detected_d:
+                reasons.append(f"📈 Elliott Wave (1D): {ew_msg_d}")
+                score += 0.5
+            
+            tri_detected_d, tri_msg_d = detect_triangle(daily)
+            if tri_detected_d:
+                reasons.append(f"📐 Triangle (1D): {tri_msg_d}")
+                score += 0.5
+            
+            flag_detected_d, flag_msg_d = detect_flag_pennant(daily)
+            if flag_detected_d:
+                reasons.append(f"🚩 Flag/Pennant (1D): {flag_msg_d}")
+                score += 0.5
+            
+            hs_detected_d, hs_msg_d = detect_head_shoulders(daily)
+            if hs_detected_d:
+                if "Inverse" in hs_msg_d:
+                    reasons.append(f"🧢 Inverse Head & Shoulders (1D): {hs_msg_d}")
+                    score += 0.5
+                else:
+                    reasons.append(f"🧢 Head & Shoulders (1D): {hs_msg_d}")
+                    score -= 0.5
+
+        # Trigger recommendation
         if is_breakout_confirmed:
-            trigger_msg = f"✅ Breakout confirmed! Entry di {aggressive_entry:.8f}"
+            trigger_msg = f"✅ Breakout confirmed! Harga di atas {aggressive_entry:.8f}. Entry agresif, trailing stop di bawah swing low."
         elif tk_cross and current_price < aggressive_entry:
-            trigger_msg = f"👀 Menunggu breakout {aggressive_entry:.8f}"
+            trigger_msg = f"👀 Menunggu breakout {aggressive_entry:.8f}. Pasang alert, entry jika tertembus dengan volume tinggi."
         else:
-            trigger_msg = f"Limit order di {conservative_entry:.8f} atau tunggu breakout {aggressive_entry:.8f}"
+            trigger_msg = f"Pasang limit order di {conservative_entry:.8f} (conservative) atau tunggu breakout {aggressive_entry:.8f} (aggressive)."
         reasons.append(f"🔔 Trigger: {trigger_msg}")
 
+        # Rekomendasi
         if score >= 5:
-            action, confidence = "BUY", "High"
+            action = "BUY"
+            confidence = "High"
         elif score >= 3.5:
-            action, confidence = "BUY", "Medium"
+            action = "BUY"
+            confidence = "Medium"
         elif score >= 2:
-            action, confidence = "BUY (Speculative)", "Low"
+            action = "BUY (Speculative)"
+            confidence = "Low"
         else:
-            action, confidence = "HOLD / WAIT", "Low"
+            action = "HOLD / WAIT"
+            confidence = "Low"
 
-        # Correlation
+        tf_1h = fetch_ohlcv_cached(symbol, exchange_name, '1h', limit=200)
+        if tf_1h is not None:
+            tf_1h = calculate_indicators(tf_1h)
+
+        sop_steps, sop_satisfied = evaluate_sop(symbol, exchange_name, daily, tf_4h)
+        reasons.append(f"SOP: {sop_satisfied}/5 langkah terpenuhi (konfirmasi lanjutan)")
+
+        # External Correlation & Sentiment
         btc_data = fetch_ohlcv_cached('BTC/USDT', exchange_name, '1d', limit=100)
-        corr = None
         if btc_data is not None:
             btc_data = calculate_indicators(btc_data)
+            btc_trend_h4 = "Unknown"
+            if tf_4h is not None and len(tf_4h) > 0:
+                tf_4h_ich = calculate_ichimoku(tf_4h.copy())
+                if tf_4h_ich is not None:
+                    last_4h = tf_4h_ich.iloc[-1]
+                    if last_4h['close'] > last_4h['senkou_a'] and last_4h['close'] > last_4h['senkou_b']:
+                        btc_trend_h4 = "Above Cloud (Bullish)"
+                    elif last_4h['close'] < last_4h['senkou_a'] and last_4h['close'] < last_4h['senkou_b']:
+                        btc_trend_h4 = "Below Cloud (Bearish)"
+                    else:
+                        btc_trend_h4 = "Inside Cloud (Neutral)"
             corr = calculate_correlation(daily, btc_data, period=30)
             if corr is not None:
                 if abs(corr) < 0.3:
-                    corr_text = f"Correlation: {corr} → Independent"
-                elif abs(corr) > 0.7:
-                    corr_text = f"Correlation: {corr} → Sangat mengikuti BTC"
+                    correlation_text = f"Correlation Score: {corr} → Independent Movement (abaikan BTC, fokus ke volume & whale wallet)"
                 else:
-                    corr_text = f"Correlation: {corr} → Cukup mengikuti BTC"
+                    correlation_text = f"Correlation Score: {corr} ({symbol.split('/')[0]} {'sangat mengikuti' if abs(corr) > 0.7 else 'cukup mengikuti' if abs(corr) > 0.5 else 'lemah mengikuti'} BTC)"
             else:
-                corr_text = "Correlation: N/A"
+                correlation_text = "Correlation Score: N/A"
         else:
-            corr_text = "Correlation: N/A"
+            btc_trend_h4 = "N/A"
+            correlation_text = "Correlation Score: N/A"
 
-        # Verdict
+        sentiment_block = [
+            "🌐 External Correlation & Sentiment",
+            f"    BTC Trend (H4): {btc_trend_h4}",
+            f"    {correlation_text}"
+        ]
+
+        # FINAL VERDICT
         if score >= 5:
-            verdict_title = "STRONG BUY"
+            verdict_title = "STRONG BUY (High Confidence)"
         elif score >= 3.5:
-            verdict_title = "BUY"
+            verdict_title = "BUY (Medium Confidence)"
         elif score >= 2:
-            verdict_title = "SPECULATIVE"
+            verdict_title = "HIGH RISK - HIGH REWARD (Speculative)"
         else:
-            verdict_title = "HOLD / WAIT"
+            verdict_title = "HOLD / WAIT (Avoid)"
+
+        if is_breakout_confirmed:
+            strategy = f"✅ Breakout confirmed! Entry agresif di {aggressive_entry:.8f} atau retest ke support dinamis."
+        else:
+            strategy = f"Pilih Entry: Tunggu retest ke {aggressive_entry:.8f} (Aggressive) atau tunggu breakout {aggressive_entry:.8f} dengan volume tinggi."
 
         key_insight = ""
         if is_accum:
-            key_insight += "Ada akumulasi diam-diam. "
+            key_insight += "Secara teknikal harga masih di bawah Cloud (Bearish), tapi OBV Naik menandakan adanya akumulasi diam-diam. "
+        if fib_text:
+            key_insight += f"Area Fibo 0.618 ({fib_618:.8f}) menjadi resistance terdekat; jika tertembus ke atas, konfirmasi breakout lebih valid. "
         if not chikou_clear:
-            key_insight += "Chikou terhambat, rawan fakeout. "
+            key_insight += "Chikou masih terhambat, kenaikan masih rawan fakeout. "
         if not tk_cross:
-            key_insight += "Belum Golden Cross. "
+            key_insight += "Tenkan-Kijun belum Golden Cross, mesin starter belum nyala. "
+        if has_twist:
+            key_insight += "Future Cloud menyempit (Kumo Twist) → potensi perubahan tren dalam waktu dekat. "
         if is_squeeze:
-            key_insight += f"Squeeze {squeeze_pct}% → siap meledak. "
+            key_insight += f"Volatility Squeeze {squeeze_pct}% → harga seperti per ditekan, siap meledak. "
+        if has_pre_breakout:
+            key_insight += f"Volume pre-breakout {pre_breakout_vol}x → whale sedang loading. "
+        if not is_above_cloud and cloud_thick > 0.02:
+            key_insight += f"⚠️ Hati-hati, ruang gerak terbatas karena Atap Beton sangat tebal ({cloud_thick:.1%}) tepat di atas harga agresif."
 
         action_plan = f"""
-        ✅ Conservative Entry: {conservative_entry:.8f}
-        🚀 Aggressive Entry: {aggressive_entry:.8f}
-        ❌ Stop Loss: {stop_loss:.8f}
-        🎯 Take Profit: {tp1:.8f} & {tp2:.8f}
-        📊 Risk/Reward: 1:{rr:.1f}
+        ✅ **Conservative Entry:** {conservative_entry:.8f} (Support kuat)
+        🚀 **Aggressive Entry (Breakout):** {aggressive_entry:.8f} (Breakout level)
+        ❌ **Stop Loss:** {stop_loss:.8f} (Wajib! Di bawah swing low terdekat)
+        🎯 **Take Profit:** Cicil di {tp1:.8f} & {tp2:.8f}
+        📊 **Risk/Reward:** 1:{rr:.1f} (Sehat jika > 1.5)
         """
+
+        if corr is not None and abs(corr) < 0.3:
+            risk_note = f"Karena korelasi BTC sangat rendah ({corr}), koin ini bergerak independen. Fokus ke volume dan whale wallet. Gunakan maksimal 3-5% dari modal."
+        else:
+            risk_note = f"Karena korelasi BTC {corr if corr else 'N/A'}, koin ini bisa bergerak anomali. Gunakan maksimal 3-5% dari modal (jangan all-in)."
 
         verdict = {
             'title': verdict_title,
-            'strategy': f"Entry di {aggressive_entry:.8f} jika breakout confirmed",
+            'strategy': strategy,
             'key_insight': key_insight,
             'action_plan': action_plan,
+            'risk_note': risk_note,
             'momentum_status': momentum_status,
             'rr': rr
         }
@@ -927,33 +1028,65 @@ def analyze_coin_deep(symbol, exchange_name):
             'reasons': reasons,
             'nearest_support': round(nearest_support, 8),
             'nearest_resistance': round(nearest_resistance, 8),
+            'liquidity_zone': liquidity_zone,
+            'swing_low': swing_low,
             'daily': daily,
             'tf_4h': tf_4h,
+            'tf_1h': tf_1h,
+            'sop_steps': sop_steps,
+            'sop_satisfied': sop_satisfied,
             'cloud_thick_pct': round(cloud_thick * 100, 1),
             'chikou_status': chikou_status,
             'future_kumo': future_kumo,
             'tk_cross': tk_cross,
             'momentum_status': momentum_status,
             'is_squeeze': is_squeeze,
+            'has_pre_breakout': has_pre_breakout,
             'is_breakout_confirmed': is_breakout_confirmed,
             'trigger_rec': trigger_msg,
-            'correlation': corr_text,
-            'verdict': verdict,
-            'breakout_probability': breakout_prob,
-            'breakout_direction': breakout_dir,
-            'breakout_hours': breakout_hours,
-            'breakout_reasons': breakout_reasons,
-            'is_pump_primed': is_pump_primed,
-            'pump_signals': pump_signals,
-            'accumulation_score': accum_score,
-            'accumulation_details': accum_details,
-            'whale_poc_zone': poc_zone,
-            'is_whale_accumulating': is_whale_accum,
-            'is_stealth_accum': is_stealth_accum
+            'sentiment_block': sentiment_block,
+            'btc_trend_h4': btc_trend_h4,
+            'correlation': corr,
+            'verdict': verdict
         }
     except Exception as e:
-        st.error(f"Error: {str(e)}")
+        st.error(f"Error dalam analisis {symbol}: {str(e)}")
         return None
+
+def evaluate_sop(symbol, exchange_name, daily_df, tf_4h):
+    steps = {}
+    if tf_4h is not None and len(tf_4h) > 0:
+        tf_4h_ich = calculate_ichimoku(tf_4h.copy())
+        if tf_4h_ich is not None:
+            last_4h = tf_4h_ich.iloc[-1]
+            above_cloud_4h = (last_4h['close'] > last_4h['senkou_a']) and (last_4h['close'] > last_4h['senkou_b'])
+        else:
+            above_cloud_4h = False
+    else:
+        above_cloud_4h = False
+    steps['1. H4 di atas awan'] = above_cloud_4h
+
+    obv_trend = daily_df['OBV_trend'].iloc[-1] if 'OBV_trend' in daily_df else False
+    vsa = vsa_low_spread_high_volume(daily_df)
+    accumulation_ok = obv_trend or vsa
+    steps['2. Akumulasi (OBV/VSA)'] = accumulation_ok
+
+    double_bottom = detect_double_bottom(daily_df)
+    _, hl = detect_hh_hl(daily_df)
+    structure_ok = double_bottom or hl
+    steps['3. Struktur (HL/Double Bottom)'] = structure_ok
+
+    patterns = detect_candlestick_patterns(daily_df)
+    bullish_pattern = any(p in patterns for p in ['Bullish Engulfing', 'Hammer'])
+    tk_cross = daily_df['tenkan'].iloc[-1] > daily_df['kijun'].iloc[-1] and daily_df['tenkan'].iloc[-2] <= daily_df['kijun'].iloc[-2]
+    trigger_ok = bullish_pattern or tk_cross
+    steps['4. Trigger (Engulfing/TK Cross)'] = trigger_ok
+
+    kill_zone = is_trading_kill_zone()
+    steps['5. Kill Zone (Waktu)'] = kill_zone
+
+    satisfied = sum(steps.values())
+    return steps, satisfied
 
 def analyze_coin_quick(symbol, exchange_name):
     try:
@@ -968,7 +1101,11 @@ def analyze_coin_quick(symbol, exchange_name):
         is_accum, _ = detect_accumulation(daily)
         nearest_support, _ = get_support_resistance_levels(daily, current_price)
 
-        conservative_entry = nearest_support if nearest_support < current_price else current_price
+        if nearest_support < current_price:
+            conservative_entry = nearest_support
+        else:
+            conservative_entry = current_price
+
         stop_loss = get_tight_stop_loss(daily, current_price, conservative_entry)
         atr_value = last['ATR'] if not pd.isna(last['ATR']) else conservative_entry * 0.02
 
@@ -988,36 +1125,50 @@ def analyze_coin_quick(symbol, exchange_name):
 
         if score >= 3:
             action = "BUY"
+            confidence = "High"
         elif score >= 2:
             action = "BUY"
+            confidence = "Medium"
         elif score >= 1:
             action = "BUY (Speculative)"
+            confidence = "Low"
         else:
-            action = "HOLD"
+            action = "HOLD / WAIT"
+            confidence = "Low"
 
         tp1 = conservative_entry + atr_value * 2.0
-        rr = (tp1 - conservative_entry) / (conservative_entry - stop_loss) if conservative_entry - stop_loss > 0 else 0
+        tp2 = conservative_entry + atr_value * 3.0
+        risk = conservative_entry - stop_loss
+        reward = tp1 - conservative_entry
+        rr = reward / risk if risk > 0 else 0
 
         return {
             'symbol': symbol,
             'current_price': round(current_price, 8),
             'conservative_entry': round(conservative_entry, 8),
             'action': action,
+            'confidence': confidence,
             'score': round(score, 1),
+            'sl': round(stop_loss, 8),
+            'tp1': round(tp1, 8),
+            'tp2': round(tp2, 8),
             'rr': round(rr, 2),
-            'is_accum': is_accum
+            'is_accum': is_accum,
+            'nearest_support': round(nearest_support, 8),
+            'volume_24h_usdt': last['volume'] * conservative_entry
         }
-    except:
+    except Exception as e:
+        print(f"Quick analysis error for {symbol}: {e}")
         return None
 
-# ======================== PLOT ========================
+# ======================== PLOT ICHIMOKU ========================
 def plot_ichimochart(df, symbol, nearest_support, nearest_resistance):
     if df is None or len(df) < 50:
         return go.Figure()
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
     fig.add_trace(go.Candlestick(x=df['timestamp'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], name='Price'), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['tenkan'], name='Tenkan', line=dict(color='blue', width=1)), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['kijun'], name='Kijun', line=dict(color='red', width=1)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['tenkan'], name='Tenkan (9)', line=dict(color='blue', width=1)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['kijun'], name='Kijun (26)', line=dict(color='red', width=1)), row=1, col=1)
     fig.add_trace(go.Scatter(x=df['timestamp'], y=df['senkou_a'], name='Senkou A', line=dict(color='green', width=1, dash='dash')), row=1, col=1)
     fig.add_trace(go.Scatter(x=df['timestamp'], y=df['senkou_b'], name='Senkou B', line=dict(color='orange', width=1, dash='dash')), row=1, col=1)
     fig.add_trace(go.Scatter(x=df['timestamp'], y=df['chikou'], name='Chikou', line=dict(color='purple', width=1)), row=1, col=1)
@@ -1026,65 +1177,82 @@ def plot_ichimochart(df, symbol, nearest_support, nearest_resistance):
         y=pd.concat([df['senkou_a'], df['senkou_b'][::-1]]),
         fill='toself', fillcolor='rgba(0,100,0,0.2)', line=dict(color='rgba(0,0,0,0)'), name='Cloud'
     ), row=1, col=1)
-    fig.add_hline(y=nearest_support, line_dash="dash", line_color="yellow", annotation_text="Support", row=1, col=1)
-    fig.add_hline(y=nearest_resistance, line_dash="dot", line_color="orange", annotation_text="Resistance", row=1, col=1)
+    fig.add_hline(y=nearest_support, line_dash="dash", line_color="yellow", annotation_text="Nearest Support", row=1, col=1)
+    fig.add_hline(y=nearest_resistance, line_dash="dot", line_color="orange", annotation_text="Nearest Resistance", row=1, col=1)
     colors = ['red' if row['open'] > row['close'] else 'green' for _, row in df.iterrows()]
     fig.add_trace(go.Bar(x=df['timestamp'], y=df['volume'], name='Volume', marker_color=colors), row=2, col=1)
-    fig.update_layout(title=f"{symbol} - Ichimoku Chart", template="plotly_dark", height=700, hovermode='x unified')
+    fig.update_layout(title=f"{symbol} - Daily Chart with Ichimoku", template="plotly_dark", height=800, hovermode='x unified')
     return fig
 
-# ======================== UI STREAMLIT ========================
+# ======================== STREAMLIT UI ========================
 with st.sidebar:
-    st.header("⚙️ Settings")
-    exchange_name = st.selectbox("Exchange", ["binance", "bybit", "okx", "kucoin", "mexc", "gate"], index=0)
-    scan_limit = st.slider("Jumlah coin", 50, 300, 150)
-    auto_refresh = st.slider("Auto-refresh (menit)", 5, 60, 30)
+    st.header("⚙️ Auto Scan Settings")
+    exchange_name = st.selectbox("Exchange", ["okx", "kucoin","mexc","gate","coinbase", "binance", "bybit"], index=0)
+    scan_limit = st.slider("Jumlah coin di-scan", 50, 300, 150)
+    auto_refresh_interval = st.slider("Auto-refresh (menit)", 5, 60, 30, help="Bot akan scan ulang otomatis setiap X menit")
     use_btc_filter = st.checkbox("Filter dengan BTC trend", value=True)
-    
-    st.markdown("---")
+    include_dxy = st.checkbox("Tampilkan DXY (memerlukan yfinance)", value=False, help="Aktifkan untuk melihat status DXY (dapat memperlambat)")
     start_auto = st.button("▶️ Mulai Auto Scan")
-    
+
     st.markdown("---")
-    st.header("🔍 Manual Analysis")
-    manual_symbol = st.text_input("Symbol", placeholder="BTC/USDT")
-    manual_button = st.button("Analyze", key="manual_btn")
+    st.header("🔍 Manual Coin Analysis")
+    manual_symbol = st.text_input("Coin symbol (e.g., BTC/USDT)", placeholder="BTC/USDT")
+    manual_button = st.button("Analyze Manual", key="manual_btn")
 
 # Session state
 if 'scan_results' not in st.session_state:
     st.session_state.scan_results = None
-if 'last_scan' not in st.session_state:
-    st.session_state.last_scan = None
+if 'last_scan_time' not in st.session_state:
+    st.session_state.last_scan_time = None
 if 'auto_running' not in st.session_state:
     st.session_state.auto_running = False
 if 'selected_coin' not in st.session_state:
     st.session_state.selected_coin = None
-if 'manual_result' not in st.session_state:
-    st.session_state.manual_result = None
-if 'deep_result' not in st.session_state:
-    st.session_state.deep_result = None
+if 'manual_analysis' not in st.session_state:
+    st.session_state.manual_analysis = None
 
-def do_scan():
+def perform_scan():
     with st.spinner("Mengambil daftar coin..."):
         pairs = get_all_usdt_pairs(exchange_name)
         if len(pairs) > scan_limit:
             pairs = pairs[:scan_limit]
-    
-    progress = st.progress(0)
+    st.info(f"📊 Scan {len(pairs)} coin...")
+
+    btc_trend = None
+    if use_btc_filter:
+        btc_df = fetch_ohlcv_cached('BTC/USDT', exchange_name, '1d', limit=100)
+        if btc_df is not None:
+            btc_df = calculate_indicators(btc_df)
+            if btc_df is not None:
+                last_btc = btc_df.iloc[-1]
+                if last_btc['close'] > last_btc['MA50'] and last_btc['close'] > last_btc['MA200']:
+                    btc_trend = "bullish"
+                elif last_btc['close'] < last_btc['MA50'] and last_btc['close'] < last_btc['MA200']:
+                    btc_trend = "bearish"
+                else:
+                    btc_trend = "neutral"
+        if btc_trend == "bearish":
+            st.warning("⚠️ BTC dalam tren bearish. Hanya coin dengan akumulasi kuat yang ditampilkan.")
+
+    progress_bar = st.progress(0)
     results = []
     for i, sym in enumerate(pairs):
-        progress.progress((i+1)/len(pairs))
+        progress_bar.progress((i+1)/len(pairs))
         res = analyze_coin_quick(sym, exchange_name)
         if res and res['action'].startswith('BUY'):
             results.append(res)
         time.sleep(0.05)
-    
+
+    if btc_trend == "bearish" and use_btc_filter:
+        results = [r for r in results if r['is_accum']]
+
     if results:
         df = pd.DataFrame(results)
         df = df.sort_values('score', ascending=False)
         st.session_state.scan_results = df
     else:
         st.session_state.scan_results = pd.DataFrame()
-    st.session_state.last_scan = datetime.now()
+    st.session_state.last_scan_time = datetime.now()
     st.rerun()
 
 if start_auto:
@@ -1092,145 +1260,201 @@ if start_auto:
 
 if st.session_state.auto_running:
     if st.session_state.scan_results is None:
-        do_scan()
-    elif st.session_state.last_scan:
-        if (datetime.now() - st.session_state.last_scan).total_seconds() / 60 >= auto_refresh:
-            do_scan()
-    if st.session_state.last_scan:
-        next_scan = st.session_state.last_scan + timedelta(minutes=auto_refresh)
-        st.sidebar.info(f"Next scan: {next_scan.strftime('%H:%M:%S')}")
-    if st.sidebar.button("Stop Auto Scan"):
+        perform_scan()
+    else:
+        if st.session_state.last_scan_time:
+            elapsed = (datetime.now() - st.session_state.last_scan_time).total_seconds() / 60
+            if elapsed >= auto_refresh_interval:
+                perform_scan()
+    if st.session_state.last_scan_time:
+        next_scan = st.session_state.last_scan_time + timedelta(minutes=auto_refresh_interval)
+        st.sidebar.info(f"🕒 Scan berikutnya: {next_scan.strftime('%H:%M:%S')}")
+    if st.sidebar.button("⏹️ Stop Auto Scan"):
         st.session_state.auto_running = False
         st.rerun()
 else:
-    if st.sidebar.button("Scan Sekarang"):
-        do_scan()
+    if st.sidebar.button("🔍 Scan Sekarang"):
+        perform_scan()
 
-# MANUAL ANALYSIS
+# Manual analysis
 if manual_button and manual_symbol:
-    sym = manual_symbol.strip().upper()
-    if not sym.endswith('/USDT'):
-        sym += '/USDT'
-    with st.spinner(f"Analisis {sym}..."):
-        res = analyze_coin_deep(sym, exchange_name)
+    symbol = manual_symbol.strip().upper()
+    if not symbol.endswith('/USDT'):
+        symbol += '/USDT'
+    with st.spinner(f"Menganalisis {symbol}..."):
+        res = analyze_coin_deep(symbol, exchange_name, include_dxy=include_dxy)
         if res:
-            st.session_state.manual_result = res
-            st.success(f"Analisis {sym} selesai")
+            st.session_state.manual_analysis = res
+            st.success(f"Analisis manual untuk {symbol} selesai.")
         else:
-            st.session_state.manual_result = None
-            st.error(f"Gagal analisis {sym}")
+            st.session_state.manual_analysis = None
+            st.error(f"Gagal menganalisis {symbol}. Periksa simbol atau koneksi.")
     st.rerun()
 
-# TAMPILKAN MANUAL RESULT
-if st.session_state.manual_result is not None:
-    dr = st.session_state.manual_result
-    
-    st.subheader(f"📊 {dr['symbol']}")
-    
-    # PREDIKSI SECTION
-    st.markdown("### 🔮 Breakout & Pump Prediction")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Breakout Probability", f"{dr['breakout_probability']}%")
-    c2.metric("Direction", dr['breakout_direction'])
-    c3.metric("Est. Timing", f"{dr['breakout_hours']} jam")
-    c4.metric("Accumulation Score", f"{dr['accumulation_score']}/100")
-    
-    if dr['is_pump_primed']:
-        st.warning("🚨 PUMP PRIMED! Setup tiba-tiba tiang tinggi terdeteksi!")
-        for s in dr['pump_signals']:
-            st.write(f"- {s}")
-    
-    if dr['is_stealth_accum']:
-        st.info("🕵️ Stealth Accumulation - Whale mengakumulasi diam-diam")
-    
-    if dr['is_whale_accumulating'] and dr['whale_poc_zone']:
-        st.success(f"🐋 Whale Zone: {dr['whale_poc_zone']:.8f}")
-    
-    with st.expander("Detail Prediksi"):
-        for r in dr['breakout_reasons']:
-            st.write(f"- {r}")
-    with st.expander("Detail Akumulasi"):
-        for r in dr['accumulation_details']:
-            st.write(f"- {r}")
-    
-    st.markdown("---")
-    
-    # METRICS UTAMA
+# Tampilkan manual analysis jika ada
+if st.session_state.manual_analysis is not None:
+    dr = st.session_state.manual_analysis
+    st.subheader(f"📊 Manual Analysis: {dr['symbol']}")
     col1, col2, col3, col4, col5 = st.columns(5)
-    col1.metric("Harga", f"{dr['current_price']:.8f}")
+    col1.metric("Harga Saat Ini", f"{dr['current_price']:.8f}")
     col2.metric("Conservative Entry", f"{dr['conservative_entry']:.8f}")
     col3.metric("Aggressive Entry", f"{dr['aggressive_entry']:.8f}")
     col4.metric("Action", dr['action'])
     col5.metric("Score", dr['score'])
-    
-    st.write(f"**Stop Loss:** {dr['sl']} | **TP1:** {dr['tp1']} | **TP2:** {dr['tp2']}")
-    st.write(f"**Risk/Reward:** 1:{dr['rr']} | **ATR:** {dr['atr']:.8f}")
-    st.write(f"**Support:** {dr['nearest_support']} | **Resistance:** {dr['nearest_resistance']}")
-    st.write(f"**Cloud Thickness:** {dr['cloud_thick_pct']}% | **Chikou:** {dr['chikou_status']} | **Future Cloud:** {dr['future_kumo']}")
-    st.write(f"**Correlation:** {dr['correlation']}")
-    
-    with st.expander("Alasan Analisis"):
+
+    with st.expander("📝 Alasan Analisis", expanded=True):
         for r in dr['reasons']:
             st.write(f"- {r}")
-    
-    # VERDICT
-    st.markdown(f"## 🚩 FINAL VERDICT: {dr['verdict']['title']}")
-    st.write(f"**Momentum:** {dr['verdict']['momentum_status']}")
-    st.write(f"**RR:** 1:{dr['verdict']['rr']:.1f}")
-    st.write(f"**Strategy:** {dr['verdict']['strategy']}")
-    st.write(f"**Key Insight:** {dr['verdict']['key_insight']}")
-    st.write(dr['verdict']['action_plan'])
-    
+
+    st.write(f"**Stop Loss:** {dr['sl']} | **Take Profit 1:** {dr['tp1']} | **Take Profit 2:** {dr['tp2']}")
+    st.write(f"**ATR (14):** {dr['atr']:.8f} — jarak aman stop loss")
+    st.write(f"**Risk/Reward:** 1:{dr['rr']:.1f}")
+    st.write(f"**Nearest Support:** {dr['nearest_support']} | **Nearest Resistance:** {dr['nearest_resistance']}")
+    if dr.get('liquidity_zone') is not None:
+        st.write(f"**Liquidity Zone (grab):** {dr['liquidity_zone']} (swing low: {dr['swing_low']})")
+    st.write(f"**Cloud Thickness:** {dr.get('cloud_thick_pct', 'N/A')}% | **Chikou Status:** {dr.get('chikou_status', 'N/A')}")
+    st.write(f"**Future Cloud:** {dr.get('future_kumo', 'N/A')}")
+
+    st.subheader("🌐 External Correlation & Sentiment")
+    for line in dr['sentiment_block']:
+        st.write(line)
+
+    st.subheader("✅ SOP 5 Langkah (Konfirmasi Lanjutan)")
+    sop_steps = dr.get('sop_steps', {})
+    for step, status in sop_steps.items():
+        st.write(f"- {step}: {'✅' if status else '❌'}")
+    st.write(f"**Total terpenuhi:** {dr.get('sop_satisfied', 0)}/5")
+    st.caption("SOP adalah syarat tambahan untuk meningkatkan probabilitas. Skor teknikal tetap menjadi dasar rekomendasi.")
+
+    # FINAL VERDICT
+    verdict = dr['verdict']
+    st.markdown(f"## 🚩 FINAL VERDICT: {dr['symbol']}")
+    st.markdown(f"**{verdict['title']}** (Skor: {dr['score']}/5)")
+    st.write(f"**Momentum Status:** {verdict['momentum_status']}")
+    st.write(f"**Risk/Reward:** 1:{verdict['rr']:.1f}")
+    st.write(f"**Strategi Utama:** {verdict['strategy']}")
+    st.write(f"**Key Insight:** {verdict['key_insight']}")
+    st.write(f"**Action Plan:**")
+    st.write(verdict['action_plan'])
+    st.write(f"**Risk Note:** {verdict['risk_note']}")
+
     if dr['daily'] is not None:
         st.plotly_chart(plot_ichimochart(dr['daily'], dr['symbol'], dr['nearest_support'], dr['nearest_resistance']), use_container_width=True)
 
-# AUTO SCAN RESULTS
+    st.write("#### Konfirmasi Multi-Timeframe")
+    col_tf1, col_tf2 = st.columns(2)
+    if dr.get('tf_4h') is not None:
+        with col_tf1:
+            st.write("**4H Chart (60 candle terakhir)**")
+            df_4h = dr['tf_4h'].tail(60)
+            fig4h = go.Figure()
+            fig4h.add_trace(go.Scatter(x=df_4h['timestamp'], y=df_4h['close'], name='Close', line=dict(color='white')))
+            fig4h.add_trace(go.Scatter(x=df_4h['timestamp'], y=df_4h['MA50'], name='MA50', line=dict(color='orange')))
+            fig4h.update_layout(template="plotly_dark", height=300)
+            st.plotly_chart(fig4h, use_container_width=True)
+    if dr.get('tf_1h') is not None:
+        with col_tf2:
+            st.write("**1H Chart (60 candle terakhir)**")
+            df_1h = dr['tf_1h'].tail(60)
+            fig1h = go.Figure()
+            fig1h.add_trace(go.Scatter(x=df_1h['timestamp'], y=df_1h['close'], name='Close', line=dict(color='white')))
+            fig1h.add_trace(go.Scatter(x=df_1h['timestamp'], y=df_1h['MA20'], name='MA20', line=dict(color='cyan')))
+            fig1h.update_layout(template="plotly_dark", height=300)
+            st.plotly_chart(fig1h, use_container_width=True)
+
+# Tampilkan auto scan results
 if st.session_state.scan_results is not None and not st.session_state.scan_results.empty:
     df = st.session_state.scan_results
-    st.subheader(f"📊 Auto Scan Results")
-    if st.session_state.last_scan:
-        st.caption(f"Last scan: {st.session_state.last_scan.strftime('%Y-%m-%d %H:%M:%S')}")
-    
-    st.dataframe(df[['symbol', 'current_price', 'conservative_entry', 'action', 'score', 'rr', 'is_accum']], use_container_width=True)
-    
-    st.subheader("Deep Analysis")
-    selected = st.selectbox("Pilih coin", df['symbol'].tolist(), key="auto_select")
-    
-    if selected != st.session_state.selected_coin:
-        st.session_state.selected_coin = selected
-        with st.spinner(f"Analisis {selected}..."):
-            deep = analyze_coin_deep(selected, exchange_name)
-            if deep:
-                st.session_state.deep_result = deep
+    st.subheader(f"📊 Auto Scan Results - {st.session_state.last_scan_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    st.dataframe(df[['symbol', 'current_price', 'conservative_entry', 'action', 'confidence', 'score', 'rr', 'sl', 'tp1', 'nearest_support', 'is_accum']],
+                 use_container_width=True)
+
+    st.subheader("🔍 Deep Analysis (Auto Scan)")
+    coin_list = df['symbol'].tolist()
+    selected_coin = st.selectbox("Pilih coin untuk analisis mendalam", coin_list, key="auto_select")
+    if selected_coin != st.session_state.selected_coin:
+        st.session_state.selected_coin = selected_coin
+        with st.spinner(f"Mengambil data detail untuk {selected_coin}..."):
+            deep_res = analyze_coin_deep(selected_coin, exchange_name, include_dxy=include_dxy)
+            if deep_res:
+                st.session_state.deep_result = deep_res
             else:
                 st.session_state.deep_result = None
         st.rerun()
-    
-    if st.session_state.deep_result is not None:
+
+    if 'deep_result' in st.session_state and st.session_state.deep_result:
         dr = st.session_state.deep_result
         st.write(f"### {dr['symbol']}")
-        
-        col_a, col_b, col_c, col_d = st.columns(4)
-        col_a.metric("Price", f"{dr['current_price']:.8f}")
-        col_b.metric("Entry", f"{dr['conservative_entry']:.8f}")
-        col_c.metric("Action", dr['action'])
-        col_d.metric("Score", dr['score'])
-        
-        st.write(f"**Breakout Prob:** {dr['breakout_probability']}% | **Accum Score:** {dr['accumulation_score']}/100 | **RR:** 1:{dr['rr']}")
-        
-        if dr['is_pump_primed']:
-            st.warning("🚨 Pump primed!")
-        
-        with st.expander("Detail"):
-            for r in dr['reasons'][:10]:
+        col1, col2, col3, col4, col5 = st.columns(5)
+        col1.metric("Harga Saat Ini", f"{dr['current_price']:.8f}")
+        col2.metric("Conservative Entry", f"{dr['conservative_entry']:.8f}")
+        col3.metric("Aggressive Entry", f"{dr['aggressive_entry']:.8f}")
+        col4.metric("Action", dr['action'])
+        col5.metric("Score", dr['score'])
+
+        with st.expander("📝 Alasan Analisis", expanded=True):
+            for r in dr['reasons']:
                 st.write(f"- {r}")
-        
-        if st.button("Lihat Chart", key="view_chart"):
+
+        st.write(f"**Stop Loss:** {dr['sl']} | **Take Profit 1:** {dr['tp1']} | **Take Profit 2:** {dr['tp2']}")
+        st.write(f"**ATR (14):** {dr['atr']:.8f} — jarak aman stop loss")
+        st.write(f"**Risk/Reward:** 1:{dr['rr']:.1f}")
+        st.write(f"**Nearest Support:** {dr['nearest_support']} | **Nearest Resistance:** {dr['nearest_resistance']}")
+        if dr.get('liquidity_zone') is not None:
+            st.write(f"**Liquidity Zone (grab):** {dr['liquidity_zone']} (swing low: {dr['swing_low']})")
+        st.write(f"**Cloud Thickness:** {dr.get('cloud_thick_pct', 'N/A')}% | **Chikou Status:** {dr.get('chikou_status', 'N/A')}")
+        st.write(f"**Future Cloud:** {dr.get('future_kumo', 'N/A')}")
+
+        st.subheader("🌐 External Correlation & Sentiment")
+        for line in dr['sentiment_block']:
+            st.write(line)
+
+        st.subheader("✅ SOP 5 Langkah (Konfirmasi Lanjutan)")
+        sop_steps = dr.get('sop_steps', {})
+        for step, status in sop_steps.items():
+            st.write(f"- {step}: {'✅' if status else '❌'}")
+        st.write(f"**Total terpenuhi:** {dr.get('sop_satisfied', 0)}/5")
+        st.caption("SOP adalah syarat tambahan untuk meningkatkan probabilitas. Skor teknikal tetap menjadi dasar rekomendasi.")
+
+        # FINAL VERDICT
+        verdict = dr['verdict']
+        st.markdown(f"## 🚩 FINAL VERDICT: {dr['symbol']}")
+        st.markdown(f"**{verdict['title']}** (Skor: {dr['score']}/5)")
+        st.write(f"**Momentum Status:** {verdict['momentum_status']}")
+        st.write(f"**Risk/Reward:** 1:{verdict['rr']:.1f}")
+        st.write(f"**Strategi Utama:** {verdict['strategy']}")
+        st.write(f"**Key Insight:** {verdict['key_insight']}")
+        st.write(f"**Action Plan:**")
+        st.write(verdict['action_plan'])
+        st.write(f"**Risk Note:** {verdict['risk_note']}")
+
+        if dr['daily'] is not None:
             st.plotly_chart(plot_ichimochart(dr['daily'], dr['symbol'], dr['nearest_support'], dr['nearest_resistance']), use_container_width=True)
+
+        st.write("#### Konfirmasi Multi-Timeframe")
+        col_tf1, col_tf2 = st.columns(2)
+        if dr.get('tf_4h') is not None:
+            with col_tf1:
+                st.write("**4H Chart (60 candle terakhir)**")
+                df_4h = dr['tf_4h'].tail(60)
+                fig4h = go.Figure()
+                fig4h.add_trace(go.Scatter(x=df_4h['timestamp'], y=df_4h['close'], name='Close', line=dict(color='white')))
+                fig4h.add_trace(go.Scatter(x=df_4h['timestamp'], y=df_4h['MA50'], name='MA50', line=dict(color='orange')))
+                fig4h.update_layout(template="plotly_dark", height=300)
+                st.plotly_chart(fig4h, use_container_width=True)
+        if dr.get('tf_1h') is not None:
+            with col_tf2:
+                st.write("**1H Chart (60 candle terakhir)**")
+                df_1h = dr['tf_1h'].tail(60)
+                fig1h = go.Figure()
+                fig1h.add_trace(go.Scatter(x=df_1h['timestamp'], y=df_1h['close'], name='Close', line=dict(color='white')))
+                fig1h.add_trace(go.Scatter(x=df_1h['timestamp'], y=df_1h['MA20'], name='MA20', line=dict(color='cyan')))
+                fig1h.update_layout(template="plotly_dark", height=300)
+                st.plotly_chart(fig1h, use_container_width=True)
 else:
     if st.session_state.scan_results is not None:
-        st.info("Tidak ada coin memenuhi kriteria")
+        st.warning("Tidak ada coin memenuhi kriteria auto scan. Coba ubah parameter.")
     else:
-        st.info("Tekan 'Mulai Auto Scan' atau 'Scan Sekarang' untuk mulai")
+        st.info("Tekan tombol 'Mulai Auto Scan' atau 'Scan Sekarang' untuk memulai auto scan, atau gunakan manual analysis di sidebar.")
 
-st.caption("Data di-cache | Akumulasi Whale + Prediksi Breakout + Pump Detection")
+st.caption("Data di-cache 10 menit. Conservative Entry = support kuat, Aggressive Entry = breakout level. Stop Loss menggunakan swing low terdekat untuk R/R sehat.")
