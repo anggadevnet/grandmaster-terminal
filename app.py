@@ -764,7 +764,7 @@ with st.sidebar:
     
     exchange_name = st.selectbox(
         "Pilih Exchange", 
-        ["binance", "bybit", "okx", "kucoin", "gate"], 
+        ["okx", "gate", "kucoin", "coinbase", "bitget", "kraken"], 
         index=0,
         help="Pilih exchange yang ingin di-scan"
     )
