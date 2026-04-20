@@ -36,11 +36,11 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ======================== HEADER ========================
-st.title("🔮 Crypto Scanner - Ultimate Edition")
+st.title("🔮 Crypto Scanner - Ultimate Edition (FINAL)")
 st.markdown("""
 <div class="medium-font">
-<b>Fitur Lengkap:</b> Deteksi Whale + Prediksi Trend + Pola Chart + Ichimoku Cloud<br>
-📌 <i>Dilengkapi prediksi arah harga 5-30 hari ke depan untuk SPOT TRADING</i>
+<b>Fitur Lengkap:</b> Deteksi Whale + Prediksi Trend + Ichimoku Cloud + Target Profit Sesuai Arah<br>
+📌 <i>Bullish = Target Take Profit (Naik) | Bearish = Target Buy Zone (Turun)</i>
 </div>
 """, unsafe_allow_html=True)
 
@@ -194,7 +194,7 @@ def calculate_obv(df):
         print(f"Error OBV: {e}")
         return df
 
-# ======================== FUNGSI REGRESI MANUAL (TANPA SKLEARN) ========================
+# ======================== FUNGSI REGRESI MANUAL ========================
 def simple_linear_regression(x, y):
     x_mean = np.mean(x)
     y_mean = np.mean(y)
@@ -353,9 +353,21 @@ def predict_trend_direction(df, days_ahead=30):
             final_direction = "SIDEWAYS (Mendatar)"
             final_direction_icon = "➡️"
         
-        total_weight = sum(p['confidence'] for p in predictions)
-        if total_weight > 0:
-            weighted_target = sum(p['target_price'] * p['confidence'] for p in predictions) / total_weight
+        # HANYA ambil prediksi yang searah dengan final direction untuk weighted target
+        aligned_predictions = []
+        if final_direction == "BULLISH (Naik)":
+            aligned_predictions = [p for p in predictions if p['direction'] in ['up', 'up_slow']]
+        elif final_direction == "BEARISH (Turun)":
+            aligned_predictions = [p for p in predictions if p['direction'] in ['down', 'down_slow']]
+        else:
+            aligned_predictions = predictions
+        
+        if aligned_predictions:
+            total_weight = sum(p['confidence'] for p in aligned_predictions)
+            if total_weight > 0:
+                weighted_target = sum(p['target_price'] * p['confidence'] for p in aligned_predictions) / total_weight
+            else:
+                weighted_target = current_price
         else:
             weighted_target = current_price
         
@@ -383,7 +395,7 @@ def predict_trend_direction(df, days_ahead=30):
         return None
 
 def get_ichimoku_summary(df):
-    """Ringkasan Ichimoku yang informatif tapi ga berlebihan"""
+    """Ringkasan Ichimoku yang informatif"""
     if df is None or len(df) < 52:
         return None
     
@@ -403,17 +415,13 @@ def get_ichimoku_summary(df):
             if current_price > cloud_top:
                 cloud_position = "DI ATAS Cloud"
                 cloud_status = "✅ Bullish - Cloud jadi support"
-                cloud_color = "green"
             elif current_price < cloud_bottom:
                 cloud_position = "DI BAWAH Cloud"
                 cloud_status = "❌ Bearish - Cloud jadi resistance"
-                cloud_color = "red"
             else:
                 cloud_position = "DI DALAM Cloud"
                 cloud_status = "⚠️ Netral - Dalam konsolidasi"
-                cloud_color = "yellow"
             
-            # Ketebalan
             if cloud_thickness > 3:
                 cloud_thickness_text = "TEBAL (Resistance kuat)"
             elif cloud_thickness > 1:
@@ -423,6 +431,7 @@ def get_ichimoku_summary(df):
         else:
             cloud_position = "Tidak tersedia"
             cloud_status = "Data tidak cukup"
+            cloud_thickness = 0
             cloud_thickness_text = "N/A"
         
         # TK Cross
@@ -430,14 +439,11 @@ def get_ichimoku_summary(df):
         kijun = last['kijun']
         if not pd.isna(tenkan) and not pd.isna(kijun):
             if tenkan > kijun:
-                tk_status = "✅ Golden Cross (Tenkan > Kijun)"
-                tk_color = "green"
+                tk_status = "✅ Golden Cross (Tenkan > Kijun) - Bullish"
             else:
-                tk_status = "⚠️ Death Cross (Tenkan < Kijun)"
-                tk_color = "red"
+                tk_status = "⚠️ Death Cross (Tenkan < Kijun) - Bearish"
         else:
             tk_status = "Tidak tersedia"
-            tk_color = "gray"
         
         # Chikou Span
         chikou = last['chikou'] if 'chikou' in df.columns else None
@@ -446,7 +452,7 @@ def get_ichimoku_summary(df):
             if chikou > price_26_ago:
                 chikou_status = "✅ Chikou di atas harga (konfirmasi bullish)"
             else:
-                chikou_status = "❌ Chikou di bawah harga (resistensi)"
+                chikou_status = "❌ Chikou di bawah harga (konfirmasi bearish)"
         else:
             chikou_status = "Tidak tersedia"
         
@@ -468,9 +474,7 @@ def get_ichimoku_summary(df):
             'cloud_thickness_text': cloud_thickness_text,
             'tk_status': tk_status,
             'chikou_status': chikou_status,
-            'future_status': future_status,
-            'cloud_color': cloud_color,
-            'tk_color': tk_color
+            'future_status': future_status
         }
         
     except Exception as e:
@@ -582,7 +586,6 @@ def predict_breakout_time(df, current_price, nearest_resistance, nearest_support
         is_trend_bearish = trend_prediction and trend_prediction['final_direction'] == "BEARISH (Turun)"
         
         if is_trend_bearish:
-            # JANGAN KASIH AGGRESSIVE ENTRY KALAU PREDIKSI BEARISH!
             breakout_soon = False
             estimated_days = days_to_resistance if days_to_resistance < 999 else 7
             breakout_type = "NONE (Bearish Trend)"
@@ -895,11 +898,34 @@ def get_entry_stop_loss(df, current_price, nearest_support):
         stop_loss = conservative_entry * 0.85
     return round(conservative_entry, 8), round(stop_loss, 8)
 
-def calculate_targets(entry_price, atr):
-    tp1 = entry_price + (atr * 2)
-    tp2 = entry_price + (atr * 3)
-    tp3 = entry_price + (atr * 5)
-    return round(tp1, 8), round(tp2, 8), round(tp3, 8)
+def calculate_targets_by_trend(entry_price, atr, trend_direction):
+    """
+    TARGET PROFIT SESUAI ARAH TREND
+    - BULLISH: Target ke ATAS (Take Profit)
+    - BEARISH: Target ke BAWAH (Buy Zone / entry lebih murah)
+    - SIDEWAYS: Target kecil ke dua arah
+    """
+    if trend_direction == "BULLISH (Naik)":
+        tp1 = entry_price + (atr * 2)
+        tp2 = entry_price + (atr * 3)
+        tp3 = entry_price + (atr * 5)
+        direction_text = "naik"
+        target_type = "Take Profit (Jual di harga tinggi)"
+    elif trend_direction == "BEARISH (Turun)":
+        # Target untuk buy zone (beli di harga lebih rendah)
+        tp1 = entry_price - (atr * 1.5)
+        tp2 = entry_price - (atr * 2.5)
+        tp3 = entry_price - (atr * 4)
+        direction_text = "turun"
+        target_type = "Buy Zone (Beli di harga lebih rendah)"
+    else:
+        tp1 = entry_price + (atr * 1)
+        tp2 = entry_price + (atr * 1.5)
+        tp3 = entry_price + (atr * 2)
+        direction_text = "sideways"
+        target_type = "Target Konservatif"
+    
+    return round(tp1, 8), round(tp2, 8), round(tp3, 8), direction_text, target_type
 
 # ======================== POLA CHART ========================
 def detect_double_bottom(df):
@@ -1004,12 +1030,6 @@ def analyze_coin_spot(symbol, exchange_name, btc_df=None):
         # Entry & Stop Loss
         conservative_entry, stop_loss = get_entry_stop_loss(daily, current_price, nearest_support)
         atr_value = last['ATR'] if not pd.isna(last['ATR']) else current_price * 0.02
-        tp1, tp2, tp3 = calculate_targets(conservative_entry, atr_value)
-        
-        # Risk/Reward
-        risk = conservative_entry - stop_loss
-        reward = tp1 - conservative_entry
-        rr_ratio = reward / risk if risk > 0 else 0
         
         # PREDIKSI MASA DEPAN
         trend_prediction = predict_trend_direction(daily, days_ahead=30)
@@ -1018,6 +1038,22 @@ def analyze_coin_spot(symbol, exchange_name, btc_df=None):
         breakout_prediction = predict_breakout_time(daily, current_price, nearest_resistance, nearest_support, trend_prediction)
         candlestick_prediction = predict_candlestick_pattern(daily, days_ahead=5)
         monte_carlo = monte_carlo_simulation(daily, days_ahead=30, simulations=500)
+        
+        # TARGET PROFIT SESUAI TREND (FIX!)
+        if trend_prediction:
+            final_trend = trend_prediction['final_direction']
+        else:
+            final_trend = "SIDEWAYS (Mendatar)"
+        
+        tp1, tp2, tp3, target_direction, target_type = calculate_targets_by_trend(conservative_entry, atr_value, final_trend)
+        
+        # Risk/Reward (hanya untuk bullish)
+        risk = conservative_entry - stop_loss
+        if final_trend == "BULLISH (Naik)":
+            reward = tp1 - conservative_entry
+            rr_ratio = reward / risk if risk > 0 else 0
+        else:
+            rr_ratio = 0  # Tidak relevan untuk bearish
         
         # WHALE DETECTION
         has_divergence, div_type, div_reason = detect_obv_divergence(daily)
@@ -1118,8 +1154,12 @@ def analyze_coin_spot(symbol, exchange_name, btc_df=None):
             score += 1
             reasons.append(f"🐋 OBV naik {daily['OBV_change_pct'].iloc[-1]:.1f}%")
         
-        # STATUS
-        if score >= 7:
+        # STATUS (tambahkan filter bearish)
+        if final_trend == "BEARISH (Turun)":
+            status = "⚠️ HOLD / WAIT - TREND BEARISH"
+            confidence = "Rendah"
+            action = "HOLD"
+        elif score >= 7:
             status = "🚀 STRONG BUY - SIAP PUMP!"
             confidence = "Tinggi"
             action = "BELI"
@@ -1140,43 +1180,37 @@ def analyze_coin_spot(symbol, exchange_name, btc_df=None):
         if trend_prediction:
             if trend_prediction['final_direction'] == "BULLISH (Naik)":
                 pump_potential = f"{abs(trend_prediction['predicted_change_pct'])}% dalam {trend_prediction['estimated_timeframe']}"
+            elif trend_prediction['final_direction'] == "BEARISH (Turun)":
+                pump_potential = f"Turun {abs(trend_prediction['predicted_change_pct'])}% (bearish) - HOLD"
             else:
-                pump_potential = f"Turun {abs(trend_prediction['predicted_change_pct'])}% (bearish)"
+                pump_potential = f"Sideways {abs(trend_prediction['predicted_change_pct'])}%"
         else:
             pump_potential = "Tidak terprediksi"
         
-        # ENTRY TIMING (SUDAH DI FIX - TIDAK KONTRADIKSI)
+        # ENTRY TIMING
         entry_timing_status = "⏳ PANTAU"
         entry_timing_reason = ""
         
-        # PRIORITAS UTAMA: CEK PREDIKSI TREND
-        if trend_prediction and trend_prediction['final_direction'] == "BEARISH (Turun)":
-            if trend_prediction['avg_confidence'] > 40:
-                entry_timing_status = "⏸️ HOLD DULU"
-                entry_timing_reason = f"Prediksi BEARISH ({trend_prediction['avg_confidence']:.0f}% confidence). Hindari beli, tunggu harga turun ke support yang lebih dalam."
-            else:
-                entry_timing_status = "⚠️ HATI-HATI"
-                entry_timing_reason = f"Prediksi bearish tapi confidence rendah ({trend_prediction['avg_confidence']:.0f}%). Pakai posisi kecil jika tetap ingin masuk."
-        
+        if final_trend == "BEARISH (Turun)":
+            entry_timing_status = "⏸️ HOLD DULU"
+            entry_timing_reason = f"Prediksi BEARISH ({trend_prediction['avg_confidence'] if trend_prediction else 50:.0f}% confidence). Hindari beli, tunggu harga turun ke support yang lebih dalam."
         elif trend_prediction and trend_prediction['final_direction'] == "BULLISH (Naik)":
             if breakout_prediction and breakout_prediction['breakout_soon'] and breakout_prediction['breakout_type'] == "UP (Resistance)":
                 entry_timing_status = "⚡ AGGRESSIVE ENTRY"
                 entry_timing_reason = f"Trend BULLISH + Prediksi breakout dalam {breakout_prediction['estimated_days']} hari ke {breakout_prediction['breakout_price']:.6f}"
             elif conservative_entry < current_price:
                 entry_timing_status = "⬇️ TUNGGU PULLBACK"
-                entry_timing_reason = f"Trend bullish, tapi harga di atas entry. Pasang limit order di {conservative_entry:.6f}"
+                entry_timing_reason = f"Pasang limit order di {conservative_entry:.6f}"
             elif conservative_entry > current_price:
                 entry_timing_status = "✅ BELI SEKARANG"
                 entry_timing_reason = f"Harga {current_price:.6f} sudah di bawah entry dalam trend bullish"
             else:
                 entry_timing_status = "⏳ PASANG LIMIT"
                 entry_timing_reason = f"Pasang limit order di {conservative_entry:.6f}"
-        
         else:
-            # Trend sideways atau tidak ada prediksi
             if breakout_prediction and breakout_prediction['breakout_soon']:
                 entry_timing_status = "⚡ AGGRESSIVE ENTRY"
-                entry_timing_reason = f"Prediksi breakout dalam {breakout_prediction['estimated_days']} hari (trend netral)"
+                entry_timing_reason = f"Prediksi breakout dalam {breakout_prediction['estimated_days']} hari"
             elif conservative_entry < current_price:
                 entry_timing_status = "⬇️ TUNGGU PULLBACK"
                 entry_timing_reason = f"Pasang limit order di {conservative_entry:.6f}"
@@ -1187,9 +1221,19 @@ def analyze_coin_spot(symbol, exchange_name, btc_df=None):
                 entry_timing_status = "⏳ PASANG LIMIT"
                 entry_timing_reason = f"Pasang limit order di {conservative_entry:.6f}"
         
-        tp1_pct = ((tp1 - conservative_entry) / conservative_entry) * 100
-        tp2_pct = ((tp2 - conservative_entry) / conservative_entry) * 100
-        tp3_pct = ((tp3 - conservative_entry) / conservative_entry) * 100
+        # Persentase target
+        if final_trend == "BULLISH (Naik)":
+            tp1_pct = ((tp1 - conservative_entry) / conservative_entry) * 100
+            tp2_pct = ((tp2 - conservative_entry) / conservative_entry) * 100
+            tp3_pct = ((tp3 - conservative_entry) / conservative_entry) * 100
+        elif final_trend == "BEARISH (Turun)":
+            tp1_pct = ((tp1 - conservative_entry) / conservative_entry) * 100
+            tp2_pct = ((tp2 - conservative_entry) / conservative_entry) * 100
+            tp3_pct = ((tp3 - conservative_entry) / conservative_entry) * 100
+        else:
+            tp1_pct = ((tp1 - conservative_entry) / conservative_entry) * 100
+            tp2_pct = ((tp2 - conservative_entry) / conservative_entry) * 100
+            tp3_pct = ((tp3 - conservative_entry) / conservative_entry) * 100
         
         beginner_summary = f"""
         **Gampangnya:** 
@@ -1198,8 +1242,14 @@ def analyze_coin_spot(symbol, exchange_name, btc_df=None):
         - ⏰ Timing: {entry_timing_status} - {entry_timing_reason}
         - 💰 Entry: {conservative_entry:.6f}
         - 🛑 Stop loss: {stop_loss:.6f}
-        - 🎯 Target: +{tp1_pct:.1f}% -> +{tp2_pct:.1f}% -> +{tp3_pct:.1f}%
         """
+        
+        # Tambahan target summary sesuai trend
+        if final_trend == "BULLISH (Naik)":
+            beginner_summary += f"\n- 🎯 Target ({target_type}): {tp1:.6f} (+{tp1_pct:.1f}%) -> {tp2:.6f} (+{tp2_pct:.1f}%) -> {tp3:.6f} (+{tp3_pct:.1f}%)"
+        elif final_trend == "BEARISH (Turun)":
+            beginner_summary += f"\n- 🎯 {target_type}: {tp1:.6f} ({tp1_pct:.1f}%) -> {tp2:.6f} ({tp2_pct:.1f}%) -> {tp3:.6f} ({tp3_pct:.1f}%)"
+            beginner_summary += f"\n- 💡 Catatan: Target adalah level entry yang lebih rendah (DCA), BUKAN take profit!"
         
         return {
             'symbol': symbol,
@@ -1212,7 +1262,9 @@ def analyze_coin_spot(symbol, exchange_name, btc_df=None):
             'tp1_pct': round(tp1_pct, 1),
             'tp2_pct': round(tp2_pct, 1),
             'tp3_pct': round(tp3_pct, 1),
-            'rr_ratio': round(rr_ratio, 2),
+            'target_direction': target_direction,
+            'target_type': target_type,
+            'rr_ratio': round(rr_ratio, 2) if final_trend == "BULLISH (Naik)" else 0,
             'score': round(score, 1),
             'status': status,
             'action': action,
@@ -1243,7 +1295,8 @@ def analyze_coin_spot(symbol, exchange_name, btc_df=None):
             'entry_timing_status': entry_timing_status,
             'entry_timing_reason': entry_timing_reason,
             'is_fakeout': is_fakeout,
-            'has_divergence': has_divergence
+            'has_divergence': has_divergence,
+            'final_trend': final_trend
         }
         
     except Exception as e:
@@ -1300,7 +1353,7 @@ def plot_advanced_chart(df, symbol, support=None, resistance=None, trendline_dat
         name='Harga'
     ), row=1, col=1)
     
-    # Ichimoku Cloud (di chart)
+    # Ichimoku Cloud
     if 'senkou_a' in df.columns and 'senkou_b' in df.columns:
         fig.add_trace(go.Scatter(x=df['timestamp'], y=df['senkou_a'], 
                                 name='Senkou A', line=dict(color='green', width=1, dash='dash')), row=1, col=1)
@@ -1397,6 +1450,10 @@ with st.sidebar:
     **📊 Garis Trend** - Support/resistance dinamis
     **⚡ Prediksi Breakout** - Kapan dan di harga berapa
     **🎲 Monte Carlo** - Simulasi 500 kemungkinan
+    
+    **📌 Target Profit:**
+    - BULLISH → Target Take Profit (harga naik)
+    - BEARISH → Target Buy Zone (harga turun untuk entry)
     """)
 
 # Session state
@@ -1474,7 +1531,9 @@ if st.session_state.scan_results is not None and not st.session_state.scan_resul
             
             if detail:
                 # Status box
-                if detail['score'] >= 7:
+                if detail['final_trend'] == "BEARISH (Turun)":
+                    box_class = "avoid-box"
+                elif detail['score'] >= 7:
                     box_class = "buy-box"
                 elif detail['score'] >= 5:
                     box_class = "buy-box"
@@ -1490,7 +1549,7 @@ if st.session_state.scan_results is not None and not st.session_state.scan_resul
                 </div>
                 """, unsafe_allow_html=True)
                 
-                # ICHIMOKU BOX (FITUR BARU!)
+                # ICHIMOKU BOX
                 if detail['ichimoku_summary']:
                     ichi = detail['ichimoku_summary']
                     st.markdown(f"""
@@ -1513,8 +1572,8 @@ if st.session_state.scan_results is not None and not st.session_state.scan_resul
                     <div class="prediction-box">
                         <h4>🔮 PREDIKSI TREND {tp['final_direction_icon']}</h4>
                         <p><b>Arah:</b> <span class="{'trend-up' if 'BULLISH' in tp['final_direction'] else 'trend-down' if 'BEARISH' in tp['final_direction'] else 'trend-sideways'}">{tp['final_direction']}</span></p>
-                        <p><b>Target Harga 30 Hari:</b> ${tp['weighted_target']:.6f} ({tp['predicted_change_pct']:+.1f}%)</p>
-                        <p><b>Confidence:</b> {tp['avg_confidence']}% | <b>Estimasi Waktu:</b> {tp['estimated_timeframe']}</p>
+                        <p><b>Target 30 Hari:</b> ${tp['weighted_target']:.6f} ({tp['predicted_change_pct']:+.1f}%)</p>
+                        <p><b>Confidence:</b> {tp['avg_confidence']}% | <b>Estimasi:</b> {tp['estimated_timeframe']}</p>
                     </div>
                     """, unsafe_allow_html=True)
                     
@@ -1578,7 +1637,7 @@ if st.session_state.scan_results is not None and not st.session_state.scan_resul
                     for ws in detail['whale_signals'][:3]:
                         st.write(f"- {ws}")
                 
-                # ENTRY TIMING (SUDAH DI FIX)
+                # ENTRY TIMING
                 if detail['entry_timing_status'] == "✅ BELI SEKARANG":
                     st.success(f"⏰ **{detail['entry_timing_status']}** - {detail['entry_timing_reason']}")
                 elif detail['entry_timing_status'] == "⬇️ TUNGGU PULLBACK":
@@ -1599,17 +1658,37 @@ if st.session_state.scan_results is not None and not st.session_state.scan_resul
                 with col3:
                     st.metric("🛑 Stop Loss", f"${detail['stop_loss']:.6f}")
                 with col4:
-                    st.metric("📊 Risk/Reward", f"1:{detail['rr_ratio']:.1f}")
+                    if detail['final_trend'] == "BULLISH (Naik)":
+                        st.metric("📊 Risk/Reward", f"1:{detail['rr_ratio']:.1f}")
+                    else:
+                        st.metric("📊 Risk/Reward", "N/A (Bearish)")
                 
-                # Target profit
-                st.write("**🎯 Target Profit:**")
+                # TARGET PROFIT (SESUAI TREND)
+                st.write(f"**🎯 {detail['target_type']}:**")
                 col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.info(f"Target 1: ${detail['tp1']:.6f} (+{detail['tp1_pct']:.1f}%)")
-                with col2:
-                    st.info(f"Target 2: ${detail['tp2']:.6f} (+{detail['tp2_pct']:.1f}%)")
-                with col3:
-                    st.success(f"Target 3: ${detail['tp3']:.6f} (+{detail['tp3_pct']:.1f}%)")
+                
+                if detail['final_trend'] == "BULLISH (Naik)":
+                    with col1:
+                        st.info(f"Target 1: ${detail['tp1']:.6f} (+{detail['tp1_pct']:.1f}%)")
+                    with col2:
+                        st.info(f"Target 2: ${detail['tp2']:.6f} (+{detail['tp2_pct']:.1f}%)")
+                    with col3:
+                        st.success(f"Target 3: ${detail['tp3']:.6f} (+{detail['tp3_pct']:.1f}%)")
+                elif detail['final_trend'] == "BEARISH (Turun)":
+                    with col1:
+                        st.warning(f"Zone 1: ${detail['tp1']:.6f} ({detail['tp1_pct']:.1f}%)")
+                    with col2:
+                        st.warning(f"Zone 2: ${detail['tp2']:.6f} ({detail['tp2_pct']:.1f}%)")
+                    with col3:
+                        st.warning(f"Zone 3: ${detail['tp3']:.6f} ({detail['tp3_pct']:.1f}%)")
+                    st.caption("💡 Ini adalah level BELI (DCA), BUKAN take profit. Harga diprediksi turun dulu.")
+                else:
+                    with col1:
+                        st.info(f"Target 1: ${detail['tp1']:.6f} ({detail['tp1_pct']:+.1f}%)")
+                    with col2:
+                        st.info(f"Target 2: ${detail['tp2']:.6f} ({detail['tp2_pct']:+.1f}%)")
+                    with col3:
+                        st.info(f"Target 3: ${detail['tp3']:.6f} ({detail['tp3_pct']:+.1f}%)")
                 
                 st.info(detail['beginner_summary'])
                 st.write(f"**📊 Support:** ${detail['nearest_support']:.6f} | **Resistance:** ${detail['nearest_resistance']:.6f}")
@@ -1676,7 +1755,9 @@ if st.session_state.manual_result:
     st.markdown("---")
     st.subheader(f"🔍 Hasil Manual Analysis: {detail['symbol']}")
     
-    if detail['score'] >= 7:
+    if detail['final_trend'] == "BEARISH (Turun)":
+        box_class = "avoid-box"
+    elif detail['score'] >= 7:
         box_class = "buy-box"
     elif detail['score'] >= 5:
         box_class = "buy-box"
@@ -1692,7 +1773,7 @@ if st.session_state.manual_result:
     </div>
     """, unsafe_allow_html=True)
     
-    # ICHIMOKU BOX (Manual Result)
+    # ICHIMOKU BOX
     if detail['ichimoku_summary']:
         ichi = detail['ichimoku_summary']
         st.markdown(f"""
@@ -1748,16 +1829,37 @@ if st.session_state.manual_result:
     with col3:
         st.metric("🛑 Stop Loss", f"${detail['stop_loss']:.6f}")
     with col4:
-        st.metric("📊 Risk/Reward", f"1:{detail['rr_ratio']:.1f}")
+        if detail['final_trend'] == "BULLISH (Naik)":
+            st.metric("📊 Risk/Reward", f"1:{detail['rr_ratio']:.1f}")
+        else:
+            st.metric("📊 Risk/Reward", "N/A")
     
-    st.write("**🎯 Target Profit:**")
+    # TARGET PROFIT
+    st.write(f"**🎯 {detail['target_type']}:**")
     col1, col2, col3 = st.columns(3)
-    with col1:
-        st.info(f"Target 1: ${detail['tp1']:.6f} (+{detail['tp1_pct']:.1f}%)")
-    with col2:
-        st.info(f"Target 2: ${detail['tp2']:.6f} (+{detail['tp2_pct']:.1f}%)")
-    with col3:
-        st.success(f"Target 3: ${detail['tp3']:.6f} (+{detail['tp3_pct']:.1f}%)")
+    
+    if detail['final_trend'] == "BULLISH (Naik)":
+        with col1:
+            st.info(f"Target 1: ${detail['tp1']:.6f} (+{detail['tp1_pct']:.1f}%)")
+        with col2:
+            st.info(f"Target 2: ${detail['tp2']:.6f} (+{detail['tp2_pct']:.1f}%)")
+        with col3:
+            st.success(f"Target 3: ${detail['tp3']:.6f} (+{detail['tp3_pct']:.1f}%)")
+    elif detail['final_trend'] == "BEARISH (Turun)":
+        with col1:
+            st.warning(f"Zone 1: ${detail['tp1']:.6f} ({detail['tp1_pct']:.1f}%)")
+        with col2:
+            st.warning(f"Zone 2: ${detail['tp2']:.6f} ({detail['tp2_pct']:.1f}%)")
+        with col3:
+            st.warning(f"Zone 3: ${detail['tp3']:.6f} ({detail['tp3_pct']:.1f}%)")
+        st.caption("💡 Ini adalah level BELI (DCA), BUKAN take profit. Harga diprediksi turun dulu.")
+    else:
+        with col1:
+            st.info(f"Target 1: ${detail['tp1']:.6f} ({detail['tp1_pct']:+.1f}%)")
+        with col2:
+            st.info(f"Target 2: ${detail['tp2']:.6f} ({detail['tp2_pct']:+.1f}%)")
+        with col3:
+            st.info(f"Target 3: ${detail['tp3']:.6f} ({detail['tp3_pct']:+.1f}%)")
     
     st.info(detail['beginner_summary'])
     st.write(f"**📊 Support:** ${detail['nearest_support']:.6f} | **Resistance:** ${detail['nearest_resistance']:.6f}")
@@ -1777,7 +1879,7 @@ if st.session_state.manual_result:
 # Footer
 st.markdown("---")
 st.caption("""
-**🔮 FITUR ULTIMATE LENGKAP:**
+**🔮 FITUR ULTIMATE LENGKAP (FINAL):**
 - ☁️ **Ichimoku Cloud** - Posisi Cloud, TK Cross, Chikou, Future Cloud, Ketebalan
 - 🔮 **Prediksi Trend 30 Hari** - 5 metode (Linear Regression, EMA, MACD, RSI, Ichimoku)
 - 🐋 **Whale Detection** - OBV Divergence, Volume Profile, Wick Manipulation, Large Transactions
@@ -1786,5 +1888,12 @@ st.caption("""
 - 🎲 **Monte Carlo Simulation** - 500 skenario kemungkinan harga
 - 🕯️ **Prediksi Pola Candlestick** - 5 hari ke depan
 
-**💡 Untuk Spot Trading:** Fokus pada skor, prediksi trend, dan entry timing. Jangan beli kalau prediksi BEARISH!
+**📌 TARGET PROFIT (SUDAH FIX):**
+- ✅ **BULLISH** → Target Take Profit (harga naik) - untuk jual di harga tinggi
+- ✅ **BEARISH** → Target Buy Zone (harga turun) - untuk beli di harga rendah (DCA)
+- ✅ **TIDAK ADA KONTRADIKSI** antara prediksi trend dan target profit
+
+**💡 Untuk Spot Trading:**
+- BULLISH → Ikuti target take profit
+- BEARISH → HOLD DULU, tunggu harga turun ke buy zone
 """)
