@@ -844,13 +844,25 @@ def get_entry_stop_loss(df, current_price, nearest_support, trend_direction, has
     atr = df['ATR'].iloc[-1] if not pd.isna(df['ATR'].iloc[-1]) else current_price * 0.02
     
     if trend_direction == "BULLISH (Naik)":
-        # Entry di support atau di atas support
-        if has_volume_spike and spike_ratio >= 3:
-            # Volume spike besar -> entry lebih agresif
-            conservative_entry = current_price * 0.98
+        # Volume spike besar = sinyal sangat bullish
+        if has_volume_spike and spike_ratio >= 5:
+            # SUPER BULLISH - entry di harga sekarang atau lebih tinggi
+            conservative_entry = current_price  # Beli sekarang
+            entry_note = "Entry SEKARANG (volume spike luar biasa)"
+        elif has_volume_spike and spike_ratio >= 3:
+            # BULLISH - entry di dekat support atau harga sekarang
+            conservative_entry = max(nearest_support, current_price * 0.995)
+            entry_note = f"Entry di sekitar support {nearest_support:.6f} atau harga sekarang"
+        elif has_volume_spike:
+            # Cukup bullish
+            conservative_entry = max(nearest_support, current_price * 0.99)
+            entry_note = f"Entry di support {nearest_support:.6f}"
         else:
+            # Normal bullish
             conservative_entry = nearest_support if nearest_support and nearest_support < current_price else current_price * 0.97
+            entry_note = f"Entry di support {nearest_support:.6f}"
         
+        # Stop loss di bawah swing low terbaru
         recent_lows = df['low'].tail(20)
         swing_low = recent_lows.min()
         stop_loss = swing_low * 0.98 if swing_low < conservative_entry else conservative_entry * 0.95
@@ -858,15 +870,21 @@ def get_entry_stop_loss(df, current_price, nearest_support, trend_direction, has
     elif trend_direction == "BEARISH (Turun)":
         conservative_entry = current_price * 0.92
         stop_loss = conservative_entry * 0.95
+        entry_note = "HOLD DULU - tunggu harga turun"
     else:
         # Sideways
-        conservative_entry = nearest_support if nearest_support and nearest_support < current_price else current_price * 0.96
+        if has_volume_spike and spike_ratio >= 3:
+            conservative_entry = current_price * 0.98
+            entry_note = "Volume spike - bisa entry agresif dengan stop loss ketat"
+        else:
+            conservative_entry = nearest_support if nearest_support and nearest_support < current_price else current_price * 0.96
+            entry_note = f"Entry di support {nearest_support:.6f}"
         stop_loss = conservative_entry * 0.95
     
     if conservative_entry - stop_loss > conservative_entry * 0.15:
         stop_loss = conservative_entry * 0.85
     
-    return round(conservative_entry, 8), round(stop_loss, 8)
+    return round(conservative_entry, 8), round(stop_loss, 8), entry_note
 
 def calculate_targets_by_trend(entry_price, atr, trend_direction, has_volume_spike, spike_ratio):
     """
