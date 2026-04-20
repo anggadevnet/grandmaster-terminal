@@ -51,7 +51,7 @@ def get_all_usdt_pairs(exchange_name):
     exchange_class = getattr(ccxt, exchange_name)
     exchange = exchange_class({
         'enableRateLimit': True,
-        'options': {'defaultType':spot'},
+        'options': {'defaultType': 'spot'},
         'timeout': 10000
     })
     markets = exchange.load_markets()
@@ -183,7 +183,7 @@ def calculate_obv(df):
         print(f"Error OBV: {e}")
         return df
 
-# ======================== PREDIKSI TREND MASA DEPAN (TANPA MONTE CARLO) ========================
+# ======================== PREDIKSI TREND MASA DEPAN ========================
 def predict_trend_direction(df, has_volume_spike, spike_ratio):
     """
     Prediksi trend dengan mempertimbangkan volume spike
@@ -221,7 +221,7 @@ def predict_trend_direction(df, has_volume_spike, spike_ratio):
         if last['MACD'] > last['Signal']:
             trend_score += 1
         
-        # ========== VOLUME SPIKE SIGNAL (Bobot 25%) - INI YANG DIPERKUAT! ==========
+        # ========== VOLUME SPIKE SIGNAL (Bobot 25%) ==========
         volume_score = 0
         volume_interpretation = ""
         
@@ -302,7 +302,7 @@ def predict_trend_direction(df, has_volume_spike, spike_ratio):
             
             weighted_target = current_price + (atr * multiplier * 3)
             predicted_change = (weighted_target - current_price) / current_price * 100
-            predicted_change = min(predicted_change, 50)  # Maks 50%
+            predicted_change = min(predicted_change, 50)
             
         elif final_direction == "BEARISH (Turun)":
             if wick_score <= -2:
@@ -314,7 +314,7 @@ def predict_trend_direction(df, has_volume_spike, spike_ratio):
             
             weighted_target = current_price - (atr * multiplier * 2)
             predicted_change = (weighted_target - current_price) / current_price * 100
-            predicted_change = max(predicted_change, -30)  # Min -30%
+            predicted_change = max(predicted_change, -30)
             
         else:
             weighted_target = current_price
@@ -362,15 +362,12 @@ def get_ichimoku_summary(df):
             if current_price > cloud_top:
                 cloud_position = "DI ATAS Cloud"
                 cloud_status = "✅ Bullish - Cloud jadi support"
-                cloud_color = "green"
             elif current_price < cloud_bottom:
                 cloud_position = "DI BAWAH Cloud"
                 cloud_status = "❌ Bearish - Cloud jadi resistance"
-                cloud_color = "red"
             else:
                 cloud_position = "DI DALAM Cloud"
                 cloud_status = "⚠️ Netral - Dalam konsolidasi"
-                cloud_color = "yellow"
             
             if cloud_thickness > 3:
                 cloud_thickness_text = "TEBAL (Resistance kuat)" if current_price < cloud_bottom else "TEBAL (Support kuat)"
@@ -390,13 +387,10 @@ def get_ichimoku_summary(df):
         if not pd.isna(tenkan) and not pd.isna(kijun):
             if tenkan > kijun:
                 tk_status = "✅ Golden Cross (Tenkan > Kijun) - Bullish"
-                tk_color = "green"
             else:
                 tk_status = "⚠️ Death Cross (Tenkan < Kijun) - Bearish"
-                tk_color = "red"
         else:
             tk_status = "Tidak tersedia"
-            tk_color = "gray"
         
         # Chikou Span
         chikou = last['chikou'] if 'chikou' in df.columns else None
@@ -964,7 +958,7 @@ def detect_head_shoulders(df):
         return False, ""
 
 # ======================== FUNGSI UTAMA ANALISIS ========================
-def analyze_coin_spot(symbol, exchange_name, btc_df=None):
+def analyze_coin_spot(symbol, exchange_name):
     try:
         daily = fetch_ohlcv_cached(symbol, exchange_name, '1d', limit=200)
         if daily is None or len(daily) < 50:
@@ -1111,7 +1105,7 @@ def analyze_coin_spot(symbol, exchange_name, btc_df=None):
             reasons.append("📉 MACD bearish (momentum negatif)")
         
         if has_volume_spike:
-            score += 2  # Bobot lebih besar
+            score += 2
             reasons.append(f"🔊 Volume spike {spike_ratio}x! - Ada whale masuk!")
         elif last['Volume_Ratio'] < 0.7:
             score += 0.5
@@ -1555,7 +1549,7 @@ if st.session_state.scan_results is not None and not st.session_state.scan_resul
                 </div>
                 """, unsafe_allow_html=True)
                 
-                # VOLUME SPIKE BOX (PENTING!)
+                # VOLUME SPIKE BOX
                 if detail['has_volume_spike']:
                     st.markdown(f"""
                     <div class="volume-box">
