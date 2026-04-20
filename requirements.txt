@@ -1,7 +1,7 @@
 streamlit
+ccxt
 pandas
-pandas_ta
+numpy
 plotly
 scipy
-numpy
-ccxt
+scikit-learn
