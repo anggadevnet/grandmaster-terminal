@@ -7,7 +7,6 @@ from datetime import datetime, timedelta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from scipy import stats
-from sklearn.linear_model import LinearRegression
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -28,6 +27,7 @@ st.markdown("""
     .avoid-box { background-color: #ff000022; padding: 15px; border-radius: 10px; border-left: 5px solid #ff0000; }
     .whale-box { background-color: #aa00ff22; padding: 15px; border-radius: 10px; border-left: 5px solid #aa00ff; }
     .prediction-box { background-color: #00aaff22; padding: 15px; border-radius: 10px; border-left: 5px solid #00aaff; }
+    .ichimoku-box { background-color: #ffaa0022; padding: 10px; border-radius: 10px; border-left: 5px solid #ffaa00; }
     .pump-badge { background-color: #ff4444; color: white; padding: 5px 10px; border-radius: 20px; font-weight: bold; display: inline-block; }
     .trend-up { color: #00ff00; font-weight: bold; }
     .trend-down { color: #ff4444; font-weight: bold; }
@@ -39,8 +39,8 @@ st.markdown("""
 st.title("🔮 Crypto Scanner - Ultimate Edition")
 st.markdown("""
 <div class="medium-font">
-<b>Fitur Lengkap:</b> Deteksi Whale + Prediksi Trend + Pola Chart Masa Depan + Garis Trend<br>
-📌 <i>Dilengkapi prediksi arah harga 5-30 hari ke depan</i>
+<b>Fitur Lengkap:</b> Deteksi Whale + Prediksi Trend + Pola Chart + Ichimoku Cloud<br>
+📌 <i>Dilengkapi prediksi arah harga 5-30 hari ke depan untuk SPOT TRADING</i>
 </div>
 """, unsafe_allow_html=True)
 
@@ -127,7 +127,7 @@ def calculate_indicators(df):
         df['BB_Lower'] = df['BB_Middle'] - 2 * bb_std
         df['BB_Width'] = (df['BB_Upper'] - df['BB_Lower']) / df['BB_Middle']
         
-        # ADX (Average Directional Index)
+        # ADX
         high_diff = df['high'].diff()
         low_diff = df['low'].diff()
         plus_dm = np.where((high_diff > low_diff) & (high_diff > 0), high_diff, 0)
@@ -194,6 +194,16 @@ def calculate_obv(df):
         print(f"Error OBV: {e}")
         return df
 
+# ======================== FUNGSI REGRESI MANUAL (TANPA SKLEARN) ========================
+def simple_linear_regression(x, y):
+    x_mean = np.mean(x)
+    y_mean = np.mean(y)
+    numerator = np.sum((x - x_mean) * (y - y_mean))
+    denominator = np.sum((x - x_mean) ** 2)
+    slope = numerator / denominator if denominator != 0 else 0
+    intercept = y_mean - slope * x_mean
+    return slope, intercept
+
 # ======================== PREDIKSI TREND MASA DEPAN ========================
 def predict_trend_direction(df, days_ahead=30):
     if df is None or len(df) < 50:
@@ -204,19 +214,15 @@ def predict_trend_direction(df, days_ahead=30):
         predictions = []
         confidence_scores = []
         
-        # METHOD 1: LINEAR REGRESSION
-        x = np.arange(len(df)).reshape(-1, 1)
+        # METHOD 1: LINEAR REGRESSION (Manual)
+        x = np.arange(len(df))
         y = df['close'].values
+        slope, intercept = simple_linear_regression(x, y)
+        future_x = np.arange(len(df), len(df) + days_ahead)
+        linear_pred = slope * future_x + intercept
         
-        model = LinearRegression()
-        model.fit(x, y)
-        
-        future_x = np.arange(len(df), len(df) + days_ahead).reshape(-1, 1)
-        linear_pred = model.predict(future_x)
-        
-        linear_slope = model.coef_[0]
-        linear_direction = "up" if linear_slope > 0 else "down" if linear_slope < 0 else "sideways"
-        linear_confidence = min(100, abs(linear_slope) / current_price * 100 * 10)
+        linear_direction = "up" if slope > 0 else "down" if slope < 0 else "sideways"
+        linear_confidence = min(100, abs(slope) / current_price * 100 * 10)
         
         predictions.append({
             'method': 'Linear Regression',
@@ -376,6 +382,101 @@ def predict_trend_direction(df, days_ahead=30):
         print(f"Error predict trend: {e}")
         return None
 
+def get_ichimoku_summary(df):
+    """Ringkasan Ichimoku yang informatif tapi ga berlebihan"""
+    if df is None or len(df) < 52:
+        return None
+    
+    try:
+        last = df.iloc[-1]
+        current_price = last['close']
+        
+        # Posisi terhadap Cloud
+        senkou_a = last['senkou_a']
+        senkou_b = last['senkou_b']
+        
+        if not pd.isna(senkou_a) and not pd.isna(senkou_b):
+            cloud_top = max(senkou_a, senkou_b)
+            cloud_bottom = min(senkou_a, senkou_b)
+            cloud_thickness = (cloud_top - cloud_bottom) / cloud_bottom * 100 if cloud_bottom > 0 else 0
+            
+            if current_price > cloud_top:
+                cloud_position = "DI ATAS Cloud"
+                cloud_status = "✅ Bullish - Cloud jadi support"
+                cloud_color = "green"
+            elif current_price < cloud_bottom:
+                cloud_position = "DI BAWAH Cloud"
+                cloud_status = "❌ Bearish - Cloud jadi resistance"
+                cloud_color = "red"
+            else:
+                cloud_position = "DI DALAM Cloud"
+                cloud_status = "⚠️ Netral - Dalam konsolidasi"
+                cloud_color = "yellow"
+            
+            # Ketebalan
+            if cloud_thickness > 3:
+                cloud_thickness_text = "TEBAL (Resistance kuat)"
+            elif cloud_thickness > 1:
+                cloud_thickness_text = "SEDANG"
+            else:
+                cloud_thickness_text = "TIPIS (Mudah ditembus)"
+        else:
+            cloud_position = "Tidak tersedia"
+            cloud_status = "Data tidak cukup"
+            cloud_thickness_text = "N/A"
+        
+        # TK Cross
+        tenkan = last['tenkan']
+        kijun = last['kijun']
+        if not pd.isna(tenkan) and not pd.isna(kijun):
+            if tenkan > kijun:
+                tk_status = "✅ Golden Cross (Tenkan > Kijun)"
+                tk_color = "green"
+            else:
+                tk_status = "⚠️ Death Cross (Tenkan < Kijun)"
+                tk_color = "red"
+        else:
+            tk_status = "Tidak tersedia"
+            tk_color = "gray"
+        
+        # Chikou Span
+        chikou = last['chikou'] if 'chikou' in df.columns else None
+        price_26_ago = df['close'].iloc[-26] if len(df) >= 26 else None
+        if chikou is not None and price_26_ago is not None and not pd.isna(chikou):
+            if chikou > price_26_ago:
+                chikou_status = "✅ Chikou di atas harga (konfirmasi bullish)"
+            else:
+                chikou_status = "❌ Chikou di bawah harga (resistensi)"
+        else:
+            chikou_status = "Tidak tersedia"
+        
+        # Future Cloud
+        future_a = df['future_senkou_a'].iloc[-1] if 'future_senkou_a' in df.columns else None
+        future_b = df['future_senkou_b'].iloc[-1] if 'future_senkou_b' in df.columns else None
+        if future_a is not None and future_b is not None and not pd.isna(future_a) and not pd.isna(future_b):
+            if future_a > future_b:
+                future_status = "🔮 Future Cloud: BULLISH (Hijau)"
+            else:
+                future_status = "🔮 Future Cloud: BEARISH (Merah)"
+        else:
+            future_status = "Tidak tersedia"
+        
+        return {
+            'cloud_position': cloud_position,
+            'cloud_status': cloud_status,
+            'cloud_thickness': round(cloud_thickness, 1),
+            'cloud_thickness_text': cloud_thickness_text,
+            'tk_status': tk_status,
+            'chikou_status': chikou_status,
+            'future_status': future_status,
+            'cloud_color': cloud_color,
+            'tk_color': tk_color
+        }
+        
+    except Exception as e:
+        print(f"Error get ichimoku summary: {e}")
+        return None
+
 def detect_trendline(df, lookback=50):
     if df is None or len(df) < lookback:
         return None
@@ -458,7 +559,7 @@ def detect_trendline(df, lookback=50):
         print(f"Error detect trendline: {e}")
         return None
 
-def predict_breakout_time(df, current_price, nearest_resistance, nearest_support):
+def predict_breakout_time(df, current_price, nearest_resistance, nearest_support, trend_prediction=None):
     if df is None or len(df) < 30:
         return None
     
@@ -476,7 +577,17 @@ def predict_breakout_time(df, current_price, nearest_resistance, nearest_support
         
         vol_trend = df['Volume_Ratio'].tail(5).mean()
         
-        if vol_trend > 1.5 and distance_to_resistance < 5:
+        # CEK KONSISTENSI DENGAN PREDIKSI TREND
+        is_trend_bullish = trend_prediction and trend_prediction['final_direction'] == "BULLISH (Naik)"
+        is_trend_bearish = trend_prediction and trend_prediction['final_direction'] == "BEARISH (Turun)"
+        
+        if is_trend_bearish:
+            # JANGAN KASIH AGGRESSIVE ENTRY KALAU PREDIKSI BEARISH!
+            breakout_soon = False
+            estimated_days = days_to_resistance if days_to_resistance < 999 else 7
+            breakout_type = "NONE (Bearish Trend)"
+            breakout_price = None
+        elif vol_trend > 1.5 and distance_to_resistance < 5:
             breakout_soon = True
             estimated_days = min(3, days_to_resistance)
             breakout_type = "UP (Resistance)"
@@ -486,7 +597,7 @@ def predict_breakout_time(df, current_price, nearest_resistance, nearest_support
             estimated_days = days_to_resistance
             breakout_type = "UP (Resistance)"
             breakout_price = nearest_resistance
-        elif distance_to_support < 3:
+        elif distance_to_support < 3 and not is_trend_bullish:
             breakout_soon = True
             estimated_days = 1
             breakout_type = "DOWN (Support)"
@@ -517,7 +628,6 @@ def predict_candlestick_pattern(df, days_ahead=5):
     
     try:
         current_price = df['close'].iloc[-1]
-        atr = df['ATR'].iloc[-1] if 'ATR' in df.columns else current_price * 0.02
         rsi = df['RSI'].iloc[-1] if 'RSI' in df.columns else 50
         volume_ratio = df['Volume_Ratio'].iloc[-1] if 'Volume_Ratio' in df.columns else 1
         
@@ -560,16 +670,14 @@ def monte_carlo_simulation(df, days_ahead=30, simulations=500):
         
         current_price = df['close'].iloc[-1]
         
-        simulated_prices = []
         final_prices = []
         
         for _ in range(simulations):
-            prices = [current_price]
+            price = current_price
             for _ in range(days_ahead):
                 random_return = np.random.normal(mean_return, std_return)
-                prices.append(prices[-1] * (1 + random_return))
-            simulated_prices.append(prices)
-            final_prices.append(prices[-1])
+                price = price * (1 + random_return)
+            final_prices.append(price)
         
         final_prices = np.array(final_prices)
         percentile_10 = np.percentile(final_prices, 10)
@@ -587,8 +695,7 @@ def monte_carlo_simulation(df, days_ahead=30, simulations=500):
             'p75': round(percentile_75, 8),
             'p90': round(percentile_90, 8),
             'mean': round(final_prices.mean(), 8),
-            'std': round(final_prices.std(), 8),
-            'simulated_paths': simulated_prices[:5]
+            'std': round(final_prices.std(), 8)
         }
         
     except Exception as e:
@@ -906,8 +1013,9 @@ def analyze_coin_spot(symbol, exchange_name, btc_df=None):
         
         # PREDIKSI MASA DEPAN
         trend_prediction = predict_trend_direction(daily, days_ahead=30)
+        ichimoku_summary = get_ichimoku_summary(daily)
         trendline_analysis = detect_trendline(daily, lookback=50)
-        breakout_prediction = predict_breakout_time(daily, current_price, nearest_resistance, nearest_support)
+        breakout_prediction = predict_breakout_time(daily, current_price, nearest_resistance, nearest_support, trend_prediction)
         candlestick_prediction = predict_candlestick_pattern(daily, days_ahead=5)
         monte_carlo = monte_carlo_simulation(daily, days_ahead=30, simulations=500)
         
@@ -1037,26 +1145,47 @@ def analyze_coin_spot(symbol, exchange_name, btc_df=None):
         else:
             pump_potential = "Tidak terprediksi"
         
-        # Entry timing
+        # ENTRY TIMING (SUDAH DI FIX - TIDAK KONTRADIKSI)
         entry_timing_status = "⏳ PANTAU"
         entry_timing_reason = ""
         
-        if breakout_prediction and breakout_prediction['breakout_soon']:
-            if breakout_prediction['breakout_type'] == "UP (Resistance)":
+        # PRIORITAS UTAMA: CEK PREDIKSI TREND
+        if trend_prediction and trend_prediction['final_direction'] == "BEARISH (Turun)":
+            if trend_prediction['avg_confidence'] > 40:
+                entry_timing_status = "⏸️ HOLD DULU"
+                entry_timing_reason = f"Prediksi BEARISH ({trend_prediction['avg_confidence']:.0f}% confidence). Hindari beli, tunggu harga turun ke support yang lebih dalam."
+            else:
+                entry_timing_status = "⚠️ HATI-HATI"
+                entry_timing_reason = f"Prediksi bearish tapi confidence rendah ({trend_prediction['avg_confidence']:.0f}%). Pakai posisi kecil jika tetap ingin masuk."
+        
+        elif trend_prediction and trend_prediction['final_direction'] == "BULLISH (Naik)":
+            if breakout_prediction and breakout_prediction['breakout_soon'] and breakout_prediction['breakout_type'] == "UP (Resistance)":
                 entry_timing_status = "⚡ AGGRESSIVE ENTRY"
-                entry_timing_reason = f"Prediksi breakout dalam {breakout_prediction['estimated_days']} hari ke resistance {breakout_prediction['breakout_price']:.6f}"
-            elif breakout_prediction['breakout_type'] == "DOWN (Support)":
+                entry_timing_reason = f"Trend BULLISH + Prediksi breakout dalam {breakout_prediction['estimated_days']} hari ke {breakout_prediction['breakout_price']:.6f}"
+            elif conservative_entry < current_price:
                 entry_timing_status = "⬇️ TUNGGU PULLBACK"
-                entry_timing_reason = f"Prediksi menyentuh support {breakout_prediction['breakout_price']:.6f} dalam {breakout_prediction['estimated_days']} hari"
-        elif conservative_entry < current_price:
-            entry_timing_status = "⬇️ TUNGGU PULLBACK"
-            entry_timing_reason = f"Pasang limit order di {conservative_entry:.6f}"
-        elif conservative_entry > current_price:
-            entry_timing_status = "✅ BELI SEKARANG"
-            entry_timing_reason = f"Harga {current_price:.6f} sudah di bawah entry"
+                entry_timing_reason = f"Trend bullish, tapi harga di atas entry. Pasang limit order di {conservative_entry:.6f}"
+            elif conservative_entry > current_price:
+                entry_timing_status = "✅ BELI SEKARANG"
+                entry_timing_reason = f"Harga {current_price:.6f} sudah di bawah entry dalam trend bullish"
+            else:
+                entry_timing_status = "⏳ PASANG LIMIT"
+                entry_timing_reason = f"Pasang limit order di {conservative_entry:.6f}"
+        
         else:
-            entry_timing_status = "⏳ PASANG LIMIT"
-            entry_timing_reason = f"Pasang limit order di {conservative_entry:.6f}"
+            # Trend sideways atau tidak ada prediksi
+            if breakout_prediction and breakout_prediction['breakout_soon']:
+                entry_timing_status = "⚡ AGGRESSIVE ENTRY"
+                entry_timing_reason = f"Prediksi breakout dalam {breakout_prediction['estimated_days']} hari (trend netral)"
+            elif conservative_entry < current_price:
+                entry_timing_status = "⬇️ TUNGGU PULLBACK"
+                entry_timing_reason = f"Pasang limit order di {conservative_entry:.6f}"
+            elif conservative_entry > current_price:
+                entry_timing_status = "✅ BELI SEKARANG"
+                entry_timing_reason = f"Harga {current_price:.6f} sudah di bawah entry"
+            else:
+                entry_timing_status = "⏳ PASANG LIMIT"
+                entry_timing_reason = f"Pasang limit order di {conservative_entry:.6f}"
         
         tp1_pct = ((tp1 - conservative_entry) / conservative_entry) * 100
         tp2_pct = ((tp2 - conservative_entry) / conservative_entry) * 100
@@ -1106,6 +1235,7 @@ def analyze_coin_spot(symbol, exchange_name, btc_df=None):
             'whale_signals': whale_signals,
             'wick_signals': wick_signals,
             'trend_prediction': trend_prediction,
+            'ichimoku_summary': ichimoku_summary,
             'trendline_analysis': trendline_analysis,
             'breakout_prediction': breakout_prediction,
             'candlestick_prediction': candlestick_prediction,
@@ -1158,7 +1288,7 @@ def plot_advanced_chart(df, symbol, support=None, resistance=None, trendline_dat
     fig = make_subplots(rows=3, cols=1, shared_xaxes=True, 
                         vertical_spacing=0.05, 
                         row_heights=[0.6, 0.2, 0.2],
-                        subplot_titles=(f"{symbol} - Harga + Garis Trend", "Volume", "RSI"))
+                        subplot_titles=(f"{symbol} - Harga + Garis Trend + Ichimoku", "Volume", "RSI"))
     
     # Candlestick
     fig.add_trace(go.Candlestick(
@@ -1170,11 +1300,34 @@ def plot_advanced_chart(df, symbol, support=None, resistance=None, trendline_dat
         name='Harga'
     ), row=1, col=1)
     
+    # Ichimoku Cloud (di chart)
+    if 'senkou_a' in df.columns and 'senkou_b' in df.columns:
+        fig.add_trace(go.Scatter(x=df['timestamp'], y=df['senkou_a'], 
+                                name='Senkou A', line=dict(color='green', width=1, dash='dash')), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df['timestamp'], y=df['senkou_b'], 
+                                name='Senkou B', line=dict(color='red', width=1, dash='dash')), row=1, col=1)
+        
+        # Fill cloud
+        fig.add_trace(go.Scatter(
+            x=pd.concat([df['timestamp'], df['timestamp'][::-1]]),
+            y=pd.concat([df['senkou_a'], df['senkou_b'][::-1]]),
+            fill='toself', fillcolor='rgba(0,100,0,0.2)', 
+            line=dict(color='rgba(0,0,0,0)'), name='Cloud'
+        ), row=1, col=1)
+    
+    # Tenkan & Kijun
+    if 'tenkan' in df.columns:
+        fig.add_trace(go.Scatter(x=df['timestamp'], y=df['tenkan'], 
+                                name='Tenkan (9)', line=dict(color='blue', width=1)), row=1, col=1)
+    if 'kijun' in df.columns:
+        fig.add_trace(go.Scatter(x=df['timestamp'], y=df['kijun'], 
+                                name='Kijun (26)', line=dict(color='orange', width=1)), row=1, col=1)
+    
     # Moving Averages
     fig.add_trace(go.Scatter(x=df['timestamp'], y=df['MA50'], 
-                            name='MA50', line=dict(color='orange', width=1.5)), row=1, col=1)
+                            name='MA50', line=dict(color='purple', width=1.5)), row=1, col=1)
     fig.add_trace(go.Scatter(x=df['timestamp'], y=df['MA200'], 
-                            name='MA200', line=dict(color='red', width=1.5)), row=1, col=1)
+                            name='MA200', line=dict(color='brown', width=1.5)), row=1, col=1)
     
     # Support & Resistance
     if support:
@@ -1236,13 +1389,14 @@ with st.sidebar:
     manual_button = st.button("🔍 Analisis Manual", use_container_width=True)
     
     st.markdown("---")
-    st.header("📖 Fitur Baru")
+    st.header("📖 Fitur Lengkap")
     st.markdown("""
-    **🔮 Prediksi Trend** - Arah harga 5-30 hari
+    **🔮 Prediksi Trend** - 5 metode (Regresi, EMA, MACD, RSI, Ichimoku)
+    **☁️ Ichimoku Cloud** - Posisi Cloud, TK Cross, Chikou, Future Cloud
+    **🐋 Whale Detection** - OBV Divergence, Volume Profile, Wick Manipulation
     **📊 Garis Trend** - Support/resistance dinamis
     **⚡ Prediksi Breakout** - Kapan dan di harga berapa
     **🎲 Monte Carlo** - Simulasi 500 kemungkinan
-    **🕯️ Pola Candlestick** - Prediksi 5 hari ke depan
     """)
 
 # Session state
@@ -1336,6 +1490,22 @@ if st.session_state.scan_results is not None and not st.session_state.scan_resul
                 </div>
                 """, unsafe_allow_html=True)
                 
+                # ICHIMOKU BOX (FITUR BARU!)
+                if detail['ichimoku_summary']:
+                    ichi = detail['ichimoku_summary']
+                    st.markdown(f"""
+                    <div class="ichimoku-box">
+                        <h4>☁️ Ichimoku Cloud Analysis</h4>
+                        <table style="width: 100%;">
+                            <tr><td style="width: 40%;"><b>Posisi Harga:</b></td><td>{ichi['cloud_position']} - {ichi['cloud_status']}</td></tr>
+                            <tr><td><b>Ketebalan Cloud:</b></td><td>{ichi['cloud_thickness_text']} ({ichi['cloud_thickness']}%)</td></tr>
+                            <tr><td><b>TK Cross:</b></td><td>{ichi['tk_status']}</td></tr>
+                            <tr><td><b>Chikou Span:</b></td><td>{ichi['chikou_status']}</td></tr>
+                            <tr><td><b>Future Cloud:</b></td><td>{ichi['future_status']}</td></tr>
+                        </table>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
                 # PREDIKSI TREND BOX
                 if detail['trend_prediction']:
                     tp = detail['trend_prediction']
@@ -1408,13 +1578,15 @@ if st.session_state.scan_results is not None and not st.session_state.scan_resul
                     for ws in detail['whale_signals'][:3]:
                         st.write(f"- {ws}")
                 
-                # ENTRY TIMING
+                # ENTRY TIMING (SUDAH DI FIX)
                 if detail['entry_timing_status'] == "✅ BELI SEKARANG":
                     st.success(f"⏰ **{detail['entry_timing_status']}** - {detail['entry_timing_reason']}")
                 elif detail['entry_timing_status'] == "⬇️ TUNGGU PULLBACK":
                     st.warning(f"⏰ **{detail['entry_timing_status']}** - {detail['entry_timing_reason']}")
                 elif detail['entry_timing_status'] == "⚡ AGGRESSIVE ENTRY":
                     st.info(f"⏰ **{detail['entry_timing_status']}** - {detail['entry_timing_reason']}")
+                elif detail['entry_timing_status'] == "⏸️ HOLD DULU":
+                    st.error(f"⏰ **{detail['entry_timing_status']}** - {detail['entry_timing_reason']}")
                 else:
                     st.info(f"⏰ **{detail['entry_timing_status']}** - {detail['entry_timing_reason']}")
                 
@@ -1459,7 +1631,7 @@ if st.session_state.scan_results is not None and not st.session_state.scan_resul
                     st.success("🐋 Divergence" if detail['has_divergence'] else "📊 No")
                 
                 if detail['wick_signals']:
-                    with st.expander("⚠️ Peringatan Wick Panjang"):
+                    with st.expander("⚠️ Peringatan Wick Panjang (Manipulasi Whale)"):
                         for w in detail['wick_signals']:
                             st.write(f"- {w}")
                 
@@ -1520,6 +1692,22 @@ if st.session_state.manual_result:
     </div>
     """, unsafe_allow_html=True)
     
+    # ICHIMOKU BOX (Manual Result)
+    if detail['ichimoku_summary']:
+        ichi = detail['ichimoku_summary']
+        st.markdown(f"""
+        <div class="ichimoku-box">
+            <h4>☁️ Ichimoku Cloud Analysis</h4>
+            <table style="width: 100%;">
+                <tr><td style="width: 40%;"><b>Posisi Harga:</b></td><td>{ichi['cloud_position']} - {ichi['cloud_status']}</td></tr>
+                <tr><td><b>Ketebalan Cloud:</b></td><td>{ichi['cloud_thickness_text']} ({ichi['cloud_thickness']}%)</td></tr>
+                <tr><td><b>TK Cross:</b></td><td>{ichi['tk_status']}</td></tr>
+                <tr><td><b>Chikou Span:</b></td><td>{ichi['chikou_status']}</td></tr>
+                <tr><td><b>Future Cloud:</b></td><td>{ichi['future_status']}</td></tr>
+            </table>
+        </div>
+        """, unsafe_allow_html=True)
+    
     # PREDIKSI TREND
     if detail['trend_prediction']:
         tp = detail['trend_prediction']
@@ -1547,6 +1735,8 @@ if st.session_state.manual_result:
         st.success(f"⏰ **{detail['entry_timing_status']}** - {detail['entry_timing_reason']}")
     elif detail['entry_timing_status'] == "⬇️ TUNGGU PULLBACK":
         st.warning(f"⏰ **{detail['entry_timing_status']}** - {detail['entry_timing_reason']}")
+    elif detail['entry_timing_status'] == "⏸️ HOLD DULU":
+        st.error(f"⏰ **{detail['entry_timing_status']}** - {detail['entry_timing_reason']}")
     else:
         st.info(f"⏰ **{detail['entry_timing_status']}** - {detail['entry_timing_reason']}")
     
@@ -1587,11 +1777,14 @@ if st.session_state.manual_result:
 # Footer
 st.markdown("---")
 st.caption("""
-**🔮 FITUR ULTIMATE:**
-- Prediksi Trend 30 Hari (5 metode: Linear Regression, EMA, MACD, RSI, Ichimoku)
-- Deteksi Garis Trend Otomatis
-- Prediksi Breakout (Waktu & Harga)
-- Monte Carlo Simulation (500 skenario)
-- Prediksi Pola Candlestick 5 Hari
-- Whale Detection (OBV Divergence, Volume Profile, Wick Manipulation)
+**🔮 FITUR ULTIMATE LENGKAP:**
+- ☁️ **Ichimoku Cloud** - Posisi Cloud, TK Cross, Chikou, Future Cloud, Ketebalan
+- 🔮 **Prediksi Trend 30 Hari** - 5 metode (Linear Regression, EMA, MACD, RSI, Ichimoku)
+- 🐋 **Whale Detection** - OBV Divergence, Volume Profile, Wick Manipulation, Large Transactions
+- 📊 **Garis Trend Otomatis** - Deteksi support/resistance dinamis
+- ⚡ **Prediksi Breakout** - Waktu dan harga breakout (tidak kontradiksi dengan trend)
+- 🎲 **Monte Carlo Simulation** - 500 skenario kemungkinan harga
+- 🕯️ **Prediksi Pola Candlestick** - 5 hari ke depan
+
+**💡 Untuk Spot Trading:** Fokus pada skor, prediksi trend, dan entry timing. Jangan beli kalau prediksi BEARISH!
 """)
