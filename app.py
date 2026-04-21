@@ -29,6 +29,7 @@ st.markdown("""
     .prediction-box { background-color: #00aaff22; padding: 15px; border-radius: 10px; border-left: 5px solid #00aaff; }
     .ichimoku-box { background-color: #ffaa0022; padding: 10px; border-radius: 10px; border-left: 5px solid #ffaa00; }
     .volume-box { background-color: #00ffaa22; padding: 10px; border-radius: 10px; border-left: 5px solid #00ffaa; }
+    .scenario-box { background-color: #ff444422; padding: 15px; border-radius: 10px; border-left: 5px solid #ff4444; }
     .pump-badge { background-color: #ff4444; color: white; padding: 5px 10px; border-radius: 20px; font-weight: bold; display: inline-block; }
     .trend-up { color: #00ff00; font-weight: bold; }
     .trend-down { color: #ff4444; font-weight: bold; }
@@ -40,7 +41,7 @@ st.markdown("""
 st.title("🔮 Crypto Scanner - Ultimate Edition (FINAL)")
 st.markdown("""
 <div class="medium-font">
-<b>Fitur Super Lengkap:</b> Ichimoku + Whale Detection + Volume Analysis + Prediksi Trend<br>
+<b>Fitur Super Lengkap:</b> Ichimoku + Whale Detection + Volume Analysis + Prediksi Trend + Skenario Kegagalan<br>
 📌 <i>Berdasarkan diskusi forum crypto: ambil yang baik, buang yang jelek</i>
 </div>
 """, unsafe_allow_html=True)
@@ -815,7 +816,6 @@ def detect_support_resistance(df):
         return None, None
 
 def get_entry_stop_loss(df, current_price, nearest_support, trend_direction, has_volume_spike, spike_ratio):
-    """ENTRY POINT YANG LOGIS - DI SUPPORT ATAU DI ATASNYA"""
     if df is None or len(df) < 20:
         return current_price * 0.95, current_price * 0.90
     
@@ -906,6 +906,123 @@ def calculate_targets_by_trend(entry_price, atr, trend_direction, has_volume_spi
         tp3_pct = ((tp3 - entry_price) / entry_price) * 100
     
     return round(tp1, 8), round(tp2, 8), round(tp3, 8), round(tp1_pct, 1), round(tp2_pct, 1), round(tp3_pct, 1), target_type
+
+# ======================== SKENARIO KEGAGALAN (FITUR BARU!) ========================
+def analyze_failure_scenarios(detail):
+    """
+    Analisis skenario kegagalan dan kondisi kritis
+    """
+    scenarios = []
+    critical_conditions = []
+    warning_score = 0
+    
+    current_price = detail['current_price']
+    entry_price = detail['entry_price']
+    stop_loss = detail['stop_loss']
+    tp1 = detail['tp1']
+    
+    # 1. SKENARIO GAGAL SEBELUM ENTRY
+    if current_price > entry_price:
+        scenarios.append({
+            'type': '⚠️ SEBELUM ENTRY',
+            'condition': f'Harga saat ini ({current_price:.6f}) sudah di atas entry ({entry_price:.6f})',
+            'what_happens': 'Kesempatan entry di harga terbaik sudah terlewat',
+            'action': 'Jangan FOMO kejar harga. Tunggu pullback atau cari coin lain.'
+        })
+        warning_score += 1
+    
+    # 2. SKENARIO GAGAL SETELAH ENTRY
+    scenarios.append({
+        'type': '❌ GAGAL TOTAL',
+        'condition': f'Harga turun dan menyentuh Stop Loss di {stop_loss:.6f}',
+        'what_happens': f'Loss {((entry_price - stop_loss) / entry_price * 100):.1f}% dari entry. Skenario pump batal.',
+        'action': 'Terima loss, jangan pindahin stop loss. Keluar, cari peluang lain.'
+    })
+    
+    # 3. Fakeout
+    if detail.get('breakout_prediction') and detail['breakout_prediction']['breakout_soon']:
+        scenarios.append({
+            'type': '⚠️ FAKEOUT',
+            'condition': f'Harga tembus resistance {detail["nearest_resistance"]:.6f} TAPI volume rendah (<1.5x) atau nutup di bawah resistance',
+            'what_happens': 'Breakout palsu, harga balik turun dan bisa menyentuh stop loss',
+            'action': 'Jangan beli di breakout. Tunggu konfirmasi 2 candle di atas resistance.'
+        })
+        warning_score += 2
+    
+    # 4. Whale jual
+    if detail.get('wick_signals') and "ATAS" in str(detail['wick_signals']):
+        scenarios.append({
+            'type': '⚠️ WHALE DISTRIBUSI',
+            'condition': 'Terjadi wick atas panjang (whale jual di harga tinggi) setelah harga naik',
+            'what_happens': 'Whale mulai jual, harga bisa turun kembali',
+            'action': 'Ambil profit sebagian, jangan terlalu serakah.'
+        })
+        warning_score += 2
+    
+    # 5. Volume turun
+    if detail['volume_ratio'] < 0.7:
+        scenarios.append({
+            'type': '⚠️ VOLUME RUNTUH',
+            'condition': f'Volume turun ke {detail["volume_ratio"]:.1f}x dari rata-rata',
+            'what_happens': 'Tidak ada yang beli lagi, momentum hilang, harga stagnan atau turun',
+            'action': 'Jika sudah profit, ambil. Jika belum, tunggu volume kembali naik.'
+        })
+        warning_score += 1
+    
+    # 6. TP1 mungkin gagal karena resistance kuat
+    if detail.get('ichimoku_summary') and "TEBAL" in detail['ichimoku_summary']['cloud_thickness_text']:
+        scenarios.append({
+            'type': '🎯 TP1 MUNGKIN GAGAL',
+            'condition': f'Cloud tebal {detail["ichimoku_summary"]["cloud_thickness"]}% di sekitar resistance',
+            'what_happens': f'Resistance kuat, harga susah tembus. TP1 ({tp1:.6f}) mungkin tidak tercapai',
+            'action': 'Ambil profit lebih awal di sekitar resistance, jangan terlalu berharap TP1.'
+        })
+        warning_score += 1
+    
+    # 7. RSI overbought
+    if detail['rsi'] > 70:
+        scenarios.append({
+            'type': '🎯 TP1 MUNGKIN GAGAL',
+            'condition': f'RSI sudah overbought ({detail["rsi"]:.1f}) sebelum mencapai TP1',
+            'what_happens': 'Harga jenuh beli, koreksi bisa terjadi kapan saja',
+            'action': 'Ambil profit lebih awal atau geser stop loss ke atas (trailing stop).'
+        })
+        warning_score += 1
+    
+    # 8. Risk/Reward jelek
+    if detail['rr_ratio'] < 1.5 and detail['rr_ratio'] > 0:
+        scenarios.append({
+            'type': '⚠️ RISIKO RR JELEK',
+            'condition': f'Risk/Reward ratio 1:{detail["rr_ratio"]:.1f} (kurang dari 1:2)',
+            'what_happens': 'Potensi untung lebih kecil dari potensi rugi',
+            'action': 'HINDARI ENTRY! Cari coin lain dengan RR minimal 1:2.'
+        })
+        warning_score += 3
+    
+    # 9. KONDISI KRITIS YANG HARUS DIPANTAU
+    distance_to_resistance = (detail['nearest_resistance'] - current_price) / current_price * 100 if detail['nearest_resistance'] > current_price else 0
+    if 0 < distance_to_resistance < 3:
+        critical_conditions.append(f"🔴 Harga hanya berjarak {distance_to_resistance:.1f}% dari resistance {detail['nearest_resistance']:.6f}. Pantau breakout!")
+        warning_score += 1
+    
+    distance_to_support = (current_price - detail['nearest_support']) / current_price * 100 if current_price > detail['nearest_support'] else 0
+    if distance_to_support < 2:
+        critical_conditions.append(f"🟡 Harga hanya berjarak {distance_to_support:.1f}% dari support {detail['nearest_support']:.6f}. Jika tembus, batalkan entry.")
+        warning_score += 1
+    
+    if detail['volume_ratio'] > 2:
+        critical_conditions.append(f"🔊 Volume {detail['volume_ratio']:.1f}x dari normal (volume spike!). Perhatikan arah harga.")
+    
+    if detail['rsi'] > 75:
+        critical_conditions.append(f"📈 RSI {detail['rsi']:.1f} (overbought ekstrem). Potensi koreksi besar.")
+    elif detail['rsi'] < 25:
+        critical_conditions.append(f"📉 RSI {detail['rsi']:.1f} (oversold ekstrem). Potensi rebound.")
+    
+    return {
+        'scenarios': scenarios,
+        'critical_conditions': critical_conditions,
+        'warning_score': warning_score
+    }
 
 # ======================== POLA CHART ========================
 def detect_double_bottom(df):
@@ -1431,6 +1548,7 @@ with st.sidebar:
     **📐 Garis Trend** - Support/resistance dinamis
     **⚡ Prediksi Breakout** - Kapan dan di harga berapa
     **🕯️ Pola Candlestick** - Prediksi 5 hari ke depan
+    **📋 Skenario Kegagalan** - Analisis risiko dan antisipasi
     """)
 
 if 'scan_results' not in st.session_state:
@@ -1714,6 +1832,61 @@ if st.session_state.scan_results is not None and not st.session_state.scan_resul
                         for w in detail['wick_signals']:
                             st.write(f"- {w}")
                 
+                # ==================== SKENARIO KEGAGALAN (FITUR BARU!) ====================
+                st.markdown("---")
+                st.subheader("📋 SKENARIO KEGAGALAN & KONDISI KRITIS")
+                
+                failure_analysis = analyze_failure_scenarios(detail)
+                
+                # Tampilkan peringatan berdasarkan warning score
+                if failure_analysis['warning_score'] >= 5:
+                    st.error(f"⚠️ **PERINGATAN TINGGI** - Terdapat {failure_analysis['warning_score']} faktor risiko. Pertimbangkan ulang entry!")
+                elif failure_analysis['warning_score'] >= 3:
+                    st.warning(f"⚠️ **PERINGATAN SEDANG** - Terdapat {failure_analysis['warning_score']} faktor risiko. Gunakan posisi kecil!")
+                else:
+                    st.success(f"✅ **RISIKO RENDAH** - Hanya {failure_analysis['warning_score']} faktor risiko. Entry cukup aman.")
+                
+                st.markdown("---")
+                
+                # Tampilkan kondisi kritis yang harus dipantau
+                if failure_analysis['critical_conditions']:
+                    st.write("### 🔍 KONDISI YANG HARUS DIPANTAU:")
+                    for cond in failure_analysis['critical_conditions']:
+                        st.write(f"- {cond}")
+                    st.markdown("---")
+                
+                # Tampilkan skenario kegagalan
+                if failure_analysis['scenarios']:
+                    st.write("### 📊 SKENARIO KEGAGALAN & ANTISIPASI:")
+                    
+                    for scenario in failure_analysis['scenarios']:
+                        if scenario['type'] == '❌ GAGAL TOTAL':
+                            st.error(f"**{scenario['type']}**")
+                            st.write(f"- **Jika:** {scenario['condition']}")
+                            st.write(f"- **Maka:** {scenario['what_happens']}")
+                            st.write(f"- **Antisipasi:** {scenario['action']}")
+                            st.write("")
+                        elif '⚠️' in scenario['type'] or 'RISIKO' in scenario['type']:
+                            st.warning(f"**{scenario['type']}**")
+                            st.write(f"- **Jika:** {scenario['condition']}")
+                            st.write(f"- **Maka:** {scenario['what_happens']}")
+                            st.write(f"- **Antisipasi:** {scenario['action']}")
+                            st.write("")
+                        elif '🎯' in scenario['type']:
+                            st.info(f"**{scenario['type']}**")
+                            st.write(f"- **Jika:** {scenario['condition']}")
+                            st.write(f"- **Maka:** {scenario['what_happens']}")
+                            st.write(f"- **Antisipasi:** {scenario['action']}")
+                            st.write("")
+                        else:
+                            st.write(f"**{scenario['type']}**")
+                            st.write(f"- **Jika:** {scenario['condition']}")
+                            st.write(f"- **Maka:** {scenario['what_happens']}")
+                            st.write(f"- **Antisipasi:** {scenario['action']}")
+                            st.write("")
+                
+                # ==================== AKHIR SKENARIO KEGAGALAN ====================
+                
                 with st.expander("📝 Detail Analisis Lengkap"):
                     for reason in detail['reasons'][:20]:
                         st.write(f"- {reason}")
@@ -1863,6 +2036,58 @@ if st.session_state.manual_result:
     st.info(detail['beginner_summary'])
     st.write(f"**📊 Support:** ${detail['nearest_support']:.6f} | **Resistance:** ${detail['nearest_resistance']:.6f}")
     
+    # ==================== SKENARIO KEGAGALAN (MANUAL RESULT) ====================
+    st.markdown("---")
+    st.subheader("📋 SKENARIO KEGAGALAN & KONDISI KRITIS")
+    
+    failure_analysis = analyze_failure_scenarios(detail)
+    
+    if failure_analysis['warning_score'] >= 5:
+        st.error(f"⚠️ **PERINGATAN TINGGI** - Terdapat {failure_analysis['warning_score']} faktor risiko. Pertimbangkan ulang entry!")
+    elif failure_analysis['warning_score'] >= 3:
+        st.warning(f"⚠️ **PERINGATAN SEDANG** - Terdapat {failure_analysis['warning_score']} faktor risiko. Gunakan posisi kecil!")
+    else:
+        st.success(f"✅ **RISIKO RENDAH** - Hanya {failure_analysis['warning_score']} faktor risiko. Entry cukup aman.")
+    
+    st.markdown("---")
+    
+    if failure_analysis['critical_conditions']:
+        st.write("### 🔍 KONDISI YANG HARUS DIPANTAU:")
+        for cond in failure_analysis['critical_conditions']:
+            st.write(f"- {cond}")
+        st.markdown("---")
+    
+    if failure_analysis['scenarios']:
+        st.write("### 📊 SKENARIO KEGAGALAN & ANTISIPASI:")
+        
+        for scenario in failure_analysis['scenarios']:
+            if scenario['type'] == '❌ GAGAL TOTAL':
+                st.error(f"**{scenario['type']}**")
+                st.write(f"- **Jika:** {scenario['condition']}")
+                st.write(f"- **Maka:** {scenario['what_happens']}")
+                st.write(f"- **Antisipasi:** {scenario['action']}")
+                st.write("")
+            elif '⚠️' in scenario['type'] or 'RISIKO' in scenario['type']:
+                st.warning(f"**{scenario['type']}**")
+                st.write(f"- **Jika:** {scenario['condition']}")
+                st.write(f"- **Maka:** {scenario['what_happens']}")
+                st.write(f"- **Antisipasi:** {scenario['action']}")
+                st.write("")
+            elif '🎯' in scenario['type']:
+                st.info(f"**{scenario['type']}**")
+                st.write(f"- **Jika:** {scenario['condition']}")
+                st.write(f"- **Maka:** {scenario['what_happens']}")
+                st.write(f"- **Antisipasi:** {scenario['action']}")
+                st.write("")
+            else:
+                st.write(f"**{scenario['type']}**")
+                st.write(f"- **Jika:** {scenario['condition']}")
+                st.write(f"- **Maka:** {scenario['what_happens']}")
+                st.write(f"- **Antisipasi:** {scenario['action']}")
+                st.write("")
+    
+    # ==================== AKHIR SKENARIO KEGAGALAN ====================
+    
     with st.expander("📝 Detail Analisis Lengkap"):
         for reason in detail['reasons'][:20]:
             st.write(f"- {reason}")
@@ -1885,6 +2110,7 @@ st.caption("""
 - ✅ **Garis Trend Otomatis** - Deteksi support/resistance dinamis
 - ✅ **Prediksi Breakout** - Waktu dan harga breakout
 - ✅ **Pola Candlestick** - Prediksi 5 hari ke depan
+- ✅ **Skenario Kegagalan** - Analisis risiko dan antisipasi (JIKA... MAKA...)
 
 **📌 Entry Point (SUDAH FIX):**
 - ✅ Entry point SEKARANG di SUPPORT atau di ATAS support
