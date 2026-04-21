@@ -217,7 +217,7 @@ def predict_trend_direction(df, has_volume_spike, spike_ratio):
         if last['MACD'] > last['Signal']:
             trend_score += 1
         
-        # VOLUME SPIKE SIGNAL (Bobot 35%) - DIPERKUAT!
+        # VOLUME SPIKE SIGNAL (Bobot 35%)
         volume_score = 0
         volume_interpretation = ""
         
@@ -824,13 +824,10 @@ def get_entry_stop_loss(df, current_price, nearest_support, trend_direction, has
     swing_low = recent_lows.min()
     
     if trend_direction == "BULLISH (Naik)":
-        # Volume spike besar = sinyal sangat bullish
         if has_volume_spike and spike_ratio >= 5:
-            # SUPER BULLISH - entry di support atau harga sekarang
             conservative_entry = max(nearest_support, current_price * 0.99)
             entry_note = "🔥 Entry AGGRESIF - volume spike luar biasa!"
         elif has_volume_spike and spike_ratio >= 3:
-            # BULLISH - entry di support
             conservative_entry = max(nearest_support, current_price * 0.995)
             entry_note = f"📊 Entry di support {nearest_support:.6f} (volume spike besar)"
         elif has_volume_spike:
@@ -840,7 +837,6 @@ def get_entry_stop_loss(df, current_price, nearest_support, trend_direction, has
             conservative_entry = nearest_support if nearest_support and nearest_support < current_price else current_price * 0.97
             entry_note = f"📊 Entry di support {nearest_support:.6f}"
         
-        # Stop loss di bawah swing low
         stop_loss = swing_low * 0.98 if swing_low < conservative_entry else conservative_entry * 0.95
         
     elif trend_direction == "BEARISH (Turun)":
@@ -848,7 +844,6 @@ def get_entry_stop_loss(df, current_price, nearest_support, trend_direction, has
         stop_loss = conservative_entry * 0.95
         entry_note = "⏸️ HOLD DULU - tunggu harga turun"
     else:
-        # Sideways
         if has_volume_spike and spike_ratio >= 3:
             conservative_entry = max(nearest_support, current_price * 0.99)
             entry_note = f"⚡ Volume spike - entry agresif di support {nearest_support:.6f}"
@@ -1557,7 +1552,342 @@ if st.session_state.scan_results is not None and not st.session_state.scan_resul
                     <div class="ichimoku-box">
                         <h4>☁️ Ichimoku Cloud Analysis</h4>
                         <table style="width: 100%;">
-                            <tr><td style="width: 40%;"><b>Posisi Harga:</b></td>
-                            <td>{ichi['cloud_position']} - {ichi['cloud_status']}</td>
-                            </tr>
-                            <tr><td
+                            <tr><td style="width: 40%;"><b>Posisi Harga:</b></td><td>{ichi['cloud_position']} - {ichi['cloud_status']}</td></tr>
+                            <tr><td><b>Ketebalan Cloud:</b></td><td>{ichi['cloud_thickness_text']} ({ichi['cloud_thickness']}%)</td></tr>
+                            <tr><td><b>TK Cross:</b></td><td>{ichi['tk_status']}</td></tr>
+                            <tr><td><b>Chikou Span:</b></td><td>{ichi['chikou_status']}</td></tr>
+                            <tr><td><b>Future Cloud:</b></td><td>{ichi['future_status']}</td></tr>
+                        </table>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                if detail['trend_prediction']:
+                    tp = detail['trend_prediction']
+                    st.markdown(f"""
+                    <div class="prediction-box">
+                        <h4>🔮 PREDIKSI TREND {tp['final_direction_icon']}</h4>
+                        <p><b>Arah:</b> <span class="{'trend-up' if 'BULLISH' in tp['final_direction'] else 'trend-down' if 'BEARISH' in tp['final_direction'] else 'trend-sideways'}">{tp['final_direction']}</span></p>
+                        <p><b>Target 30 Hari:</b> ${tp['weighted_target']:.6f} ({tp['predicted_change_pct']:+.1f}%)</p>
+                        <p><b>Confidence:</b> {tp['avg_confidence']}% | <b>Estimasi:</b> {tp['estimated_timeframe']}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    with st.expander("📊 Detail Prediksi (5 Komponen)"):
+                        st.write(f"- Ichimoku Score: {tp['ichi_score']}")
+                        st.write(f"- Trend Score: {tp['trend_score']}")
+                        st.write(f"- Volume Score: {tp['volume_score']}")
+                        st.write(f"- RSI Score: {tp['rsi_score']}")
+                        st.write(f"- Whale Wick Score: {tp['wick_score']}")
+                        st.write(f"- **Total Score: {tp['total_score']}**")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    if detail['trendline_analysis']:
+                        ta = detail['trendline_analysis']
+                        st.subheader("📐 Analisis Garis Trend")
+                        if ta['trendline_up']:
+                            st.write(f"- Trendline Naik: slope {ta['trendline_up']['slope']:.2e}")
+                        if ta['trendline_down']:
+                            st.write(f"- Trendline Turun: slope {ta['trendline_down']['slope']:.2e}")
+                        if ta['breakout_prediction']:
+                            st.info(f"💡 {ta['breakout_prediction']}")
+                
+                with col2:
+                    if detail['breakout_prediction']:
+                        bp = detail['breakout_prediction']
+                        st.subheader("⚡ Prediksi Breakout")
+                        st.write(f"- Jarak ke resistance: {bp['distance_to_resistance_pct']}%")
+                        st.write(f"- Jarak ke support: {bp['distance_to_support_pct']}%")
+                        st.write(f"- Volume trend: {bp['volume_trend']}x normal")
+                        if bp['breakout_soon']:
+                            st.warning(f"🚨 {bp['advice']}")
+                        else:
+                            st.info(f"ℹ️ {bp['advice']}")
+                
+                if detail['candlestick_prediction']:
+                    st.subheader("🕯️ Prediksi Pola Candlestick (5 Hari)")
+                    for pred in detail['candlestick_prediction'][:3]:
+                        st.write(f"- {pred}")
+                
+                if detail['whale_confidence'] >= 3:
+                    st.markdown(f"""
+                    <div class="whale-box">
+                        <h4>🐋 WHALE DETECTION (Confidence {detail['whale_confidence']}/7)</h4>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    for ws in detail['whale_signals'][:4]:
+                        st.write(f"- {ws}")
+                
+                if detail['entry_timing_status'] == "✅ BELI SEKARANG":
+                    st.success(f"⏰ **{detail['entry_timing_status']}** - {detail['entry_timing_reason']}")
+                elif detail['entry_timing_status'] == "⬇️ TUNGGU PULLBACK":
+                    st.warning(f"⏰ **{detail['entry_timing_status']}** - {detail['entry_timing_reason']}")
+                elif detail['entry_timing_status'] == "⚡ AGGRESSIVE ENTRY":
+                    st.info(f"⏰ **{detail['entry_timing_status']}** - {detail['entry_timing_reason']}")
+                elif detail['entry_timing_status'] == "⏸️ HOLD DULU":
+                    st.error(f"⏰ **{detail['entry_timing_status']}** - {detail['entry_timing_reason']}")
+                else:
+                    st.info(f"⏰ **{detail['entry_timing_status']}** - {detail['entry_timing_reason']}")
+                
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("💰 Harga Saat Ini", f"${detail['current_price']:.6f}")
+                with col2:
+                    st.metric("🎯 Entry Point", f"${detail['entry_price']:.6f}")
+                with col3:
+                    st.metric("🛑 Stop Loss", f"${detail['stop_loss']:.6f}")
+                with col4:
+                    if detail['final_trend'] == "BULLISH (Naik)":
+                        st.metric("📊 Risk/Reward", f"1:{detail['rr_ratio']:.1f}")
+                    else:
+                        st.metric("📊 Risk/Reward", "N/A")
+                
+                st.write(f"**🎯 {detail['target_type']}:**")
+                col1, col2, col3 = st.columns(3)
+                
+                if detail['final_trend'] == "BULLISH (Naik)":
+                    with col1:
+                        st.info(f"Target 1: ${detail['tp1']:.6f} (+{detail['tp1_pct']:.1f}%)")
+                    with col2:
+                        st.info(f"Target 2: ${detail['tp2']:.6f} (+{detail['tp2_pct']:.1f}%)")
+                    with col3:
+                        st.success(f"Target 3: ${detail['tp3']:.6f} (+{detail['tp3_pct']:.1f}%)")
+                elif detail['final_trend'] == "BEARISH (Turun)":
+                    with col1:
+                        st.warning(f"Zone 1: ${detail['tp1']:.6f} ({detail['tp1_pct']:.1f}%)")
+                    with col2:
+                        st.warning(f"Zone 2: ${detail['tp2']:.6f} ({detail['tp2_pct']:.1f}%)")
+                    with col3:
+                        st.warning(f"Zone 3: ${detail['tp3']:.6f} ({detail['tp3_pct']:.1f}%)")
+                    st.caption("💡 Ini adalah level BELI (DCA), BUKAN take profit. Harga diprediksi turun dulu.")
+                else:
+                    with col1:
+                        st.info(f"Target 1: ${detail['tp1']:.6f} ({detail['tp1_pct']:+.1f}%)")
+                    with col2:
+                        st.info(f"Target 2: ${detail['tp2']:.6f} ({detail['tp2_pct']:+.1f}%)")
+                    with col3:
+                        st.info(f"Target 3: ${detail['tp3']:.6f} ({detail['tp3_pct']:+.1f}%)")
+                
+                st.info(detail['beginner_summary'])
+                st.write(f"**📊 Support:** ${detail['nearest_support']:.6f} | **Resistance:** ${detail['nearest_resistance']:.6f}")
+                
+                st.write("**📡 Signal Terdeteksi:**")
+                sig_cols = st.columns(7)
+                with sig_cols[0]:
+                    if detail['whale_confidence'] >= 3:
+                        st.success("🐋 Whale")
+                    else:
+                        st.info("⏳ No Whale")
+                with sig_cols[1]:
+                    if detail['has_volume_spike']:
+                        st.warning(f"🔊 Volume {detail['spike_ratio']}x")
+                    else:
+                        st.info("📊 Volume Normal")
+                with sig_cols[2]:
+                    if detail['is_squeeze']:
+                        st.error(f"🔥 Squeeze {detail['squeeze_pct']}%")
+                    else:
+                        st.info("📈 No Squeeze")
+                with sig_cols[3]:
+                    if detail['has_breakout']:
+                        st.success("🚀 Breakout")
+                    else:
+                        st.info("🔒 No Breakout")
+                with sig_cols[4]:
+                    if detail['tk_cross']:
+                        st.success("📈 TK Cross")
+                    else:
+                        st.info("⚠️ No TK Cross")
+                with sig_cols[5]:
+                    if detail['has_divergence']:
+                        st.success("🐋 Divergence")
+                    else:
+                        st.info("📊 No Divergence")
+                with sig_cols[6]:
+                    if detail['is_accum']:
+                        st.success("📦 Akumulasi")
+                    else:
+                        st.info("⏳ No Accum")
+                
+                if detail['wick_signals']:
+                    with st.expander("⚠️ Peringatan Wick Panjang (Manipulasi Whale)"):
+                        for w in detail['wick_signals']:
+                            st.write(f"- {w}")
+                
+                with st.expander("📝 Detail Analisis Lengkap"):
+                    for reason in detail['reasons'][:20]:
+                        st.write(f"- {reason}")
+                
+                st.plotly_chart(plot_advanced_chart(
+                    detail['daily_df'], 
+                    detail['symbol'],
+                    detail['nearest_support'],
+                    detail['nearest_resistance'],
+                    detail['trendline_analysis']
+                ), use_container_width=True)
+                
+                st.caption("⚠️ **Disclaimer:** Analisis berdasarkan data historis dan probabilitas. Bukan jaminan keuntungan. Selalu gunakan manajemen risiko!")
+
+if manual_button and manual_symbol:
+    symbol = manual_symbol.strip().upper()
+    if not symbol.endswith('/USDT'):
+        symbol += '/USDT'
+    
+    with st.spinner(f"Menganalisis {symbol}..."):
+        result = analyze_coin_spot(symbol, exchange_name)
+        
+        if result:
+            st.session_state.manual_result = result
+            st.success(f"✅ Analisis {symbol} selesai!")
+        else:
+            st.error(f"❌ Gagal menganalisis {symbol}")
+        st.rerun()
+
+if st.session_state.manual_result:
+    detail = st.session_state.manual_result
+    
+    st.markdown("---")
+    st.subheader(f"🔍 Hasil Manual Analysis: {detail['symbol']}")
+    
+    if detail['final_trend'] == "BEARISH (Turun)":
+        box_class = "avoid-box"
+    elif detail['score'] >= 8:
+        box_class = "buy-box"
+    elif detail['score'] >= 6:
+        box_class = "buy-box"
+    elif detail['score'] >= 4:
+        box_class = "wait-box"
+    else:
+        box_class = "avoid-box"
+    
+    st.markdown(f"""
+    <div class="{box_class}">
+        <h3>{detail['status']}</h3>
+        <p><b>Skor:</b> {detail['score']}/10 | <b>Konfidensi:</b> {detail['confidence']}</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    if detail['has_volume_spike']:
+        st.markdown(f"""
+        <div class="volume-box">
+            <h4>🔊 VOLUME SPIKE {detail['spike_ratio']}x!</h4>
+            <p>{detail['trend_prediction']['volume_interpretation'] if detail['trend_prediction'] else 'Ada lonjakan volume signifikan!'}</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    if detail['ichimoku_summary']:
+        ichi = detail['ichimoku_summary']
+        st.markdown(f"""
+        <div class="ichimoku-box">
+            <h4>☁️ Ichimoku Cloud Analysis</h4>
+            <table style="width: 100%;">
+                <tr><td style="width: 40%;"><b>Posisi Harga:</b></td><td>{ichi['cloud_position']} - {ichi['cloud_status']}</td></tr>
+                <tr><td><b>Ketebalan Cloud:</b></td><td>{ichi['cloud_thickness_text']} ({ichi['cloud_thickness']}%)</td></tr>
+                <tr><td><b>TK Cross:</b></td><td>{ichi['tk_status']}</td></tr>
+                <tr><td><b>Chikou Span:</b></td><td>{ichi['chikou_status']}</td></tr>
+                <tr><td><b>Future Cloud:</b></td><td>{ichi['future_status']}</td></tr>
+            </table>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    if detail['trend_prediction']:
+        tp = detail['trend_prediction']
+        st.markdown(f"""
+        <div class="prediction-box">
+            <h4>🔮 PREDIKSI TREND {tp['final_direction_icon']}</h4>
+            <p><b>Arah:</b> <span class="{'trend-up' if 'BULLISH' in tp['final_direction'] else 'trend-down' if 'BEARISH' in tp['final_direction'] else 'trend-sideways'}">{tp['final_direction']}</span></p>
+            <p><b>Target 30 Hari:</b> ${tp['weighted_target']:.6f} ({tp['predicted_change_pct']:+.1f}%)</p>
+            <p><b>Confidence:</b> {tp['avg_confidence']}% | <b>Estimasi:</b> {tp['estimated_timeframe']}</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    if detail['whale_confidence'] >= 3:
+        st.markdown(f"""
+        <div class="whale-box">
+            <h4>🐋 WHALE DETECTION (Confidence {detail['whale_confidence']}/7)</h4>
+        </div>
+        """, unsafe_allow_html=True)
+        for ws in detail['whale_signals'][:4]:
+            st.write(f"- {ws}")
+    
+    if detail['entry_timing_status'] == "✅ BELI SEKARANG":
+        st.success(f"⏰ **{detail['entry_timing_status']}** - {detail['entry_timing_reason']}")
+    elif detail['entry_timing_status'] == "⬇️ TUNGGU PULLBACK":
+        st.warning(f"⏰ **{detail['entry_timing_status']}** - {detail['entry_timing_reason']}")
+    elif detail['entry_timing_status'] == "⚡ AGGRESSIVE ENTRY":
+        st.info(f"⏰ **{detail['entry_timing_status']}** - {detail['entry_timing_reason']}")
+    elif detail['entry_timing_status'] == "⏸️ HOLD DULU":
+        st.error(f"⏰ **{detail['entry_timing_status']}** - {detail['entry_timing_reason']}")
+    else:
+        st.info(f"⏰ **{detail['entry_timing_status']}** - {detail['entry_timing_reason']}")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("💰 Harga Saat Ini", f"${detail['current_price']:.6f}")
+    with col2:
+        st.metric("🎯 Entry Point", f"${detail['entry_price']:.6f}")
+    with col3:
+        st.metric("🛑 Stop Loss", f"${detail['stop_loss']:.6f}")
+    with col4:
+        if detail['final_trend'] == "BULLISH (Naik)":
+            st.metric("📊 Risk/Reward", f"1:{detail['rr_ratio']:.1f}")
+        else:
+            st.metric("📊 Risk/Reward", "N/A")
+    
+    st.write(f"**🎯 {detail['target_type']}:**")
+    col1, col2, col3 = st.columns(3)
+    
+    if detail['final_trend'] == "BULLISH (Naik)":
+        with col1:
+            st.info(f"Target 1: ${detail['tp1']:.6f} (+{detail['tp1_pct']:.1f}%)")
+        with col2:
+            st.info(f"Target 2: ${detail['tp2']:.6f} (+{detail['tp2_pct']:.1f}%)")
+        with col3:
+            st.success(f"Target 3: ${detail['tp3']:.6f} (+{detail['tp3_pct']:.1f}%)")
+    elif detail['final_trend'] == "BEARISH (Turun)":
+        with col1:
+            st.warning(f"Zone 1: ${detail['tp1']:.6f} ({detail['tp1_pct']:.1f}%)")
+        with col2:
+            st.warning(f"Zone 2: ${detail['tp2']:.6f} ({detail['tp2_pct']:.1f}%)")
+        with col3:
+            st.warning(f"Zone 3: ${detail['tp3']:.6f} ({detail['tp3_pct']:.1f}%)")
+        st.caption("💡 Ini adalah level BELI (DCA), BUKAN take profit. Harga diprediksi turun dulu.")
+    else:
+        with col1:
+            st.info(f"Target 1: ${detail['tp1']:.6f} ({detail['tp1_pct']:+.1f}%)")
+        with col2:
+            st.info(f"Target 2: ${detail['tp2']:.6f} ({detail['tp2_pct']:+.1f}%)")
+        with col3:
+            st.info(f"Target 3: ${detail['tp3']:.6f} ({detail['tp3_pct']:+.1f}%)")
+    
+    st.info(detail['beginner_summary'])
+    st.write(f"**📊 Support:** ${detail['nearest_support']:.6f} | **Resistance:** ${detail['nearest_resistance']:.6f}")
+    
+    with st.expander("📝 Detail Analisis Lengkap"):
+        for reason in detail['reasons'][:20]:
+            st.write(f"- {reason}")
+    
+    st.plotly_chart(plot_advanced_chart(
+        detail['daily_df'], 
+        detail['symbol'],
+        detail['nearest_support'],
+        detail['nearest_resistance'],
+        detail['trendline_analysis']
+    ), use_container_width=True)
+
+st.markdown("---")
+st.caption("""
+**🔮 FITUR SUPER LENGKAP (FINAL):**
+- ✅ **Ichimoku Cloud** - Posisi Cloud, TK Cross, Chikou, Future Cloud, Ketebalan
+- ✅ **Prediksi Trend 30 Hari** - 5 komponen (Ichimoku, Trend, Volume, RSI, Whale)
+- ✅ **Volume Spike Detection** - Deteksi whale masuk dengan bobot tinggi
+- ✅ **Whale Detection** - OBV Divergence, Volume Profile, Wick Manipulation
+- ✅ **Garis Trend Otomatis** - Deteksi support/resistance dinamis
+- ✅ **Prediksi Breakout** - Waktu dan harga breakout
+- ✅ **Pola Candlestick** - Prediksi 5 hari ke depan
+
+**📌 Entry Point (SUDAH FIX):**
+- ✅ Entry point SEKARANG di SUPPORT atau di ATAS support
+- ✅ Volume spike = entry lebih agresif (tetap di support)
+- ✅ Tidak ada entry di bawah support lagi!
+""")
