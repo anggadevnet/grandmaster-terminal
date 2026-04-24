@@ -46,42 +46,73 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+# ======================== HELPER FUNCTIONS ========================
+def create_exchange(exchange_name):
+    """Membuat exchange instance dengan error handling"""
+    exchange_class = getattr(ccxt, exchange_name)
+    return exchange_class({
+        'enableRateLimit': True,
+        'options': {'defaultType': 'spot'},
+        'timeout': 30000,
+        'rateLimit': 2000
+    })
+
+def safe_fetch_markets(exchange_name, max_retries=3):
+    """Safe fetch markets dengan retry dan fallback"""
+    for attempt in range(max_retries):
+        try:
+            exchange = create_exchange(exchange_name)
+            markets = exchange.load_markets()
+            return markets
+        except Exception as e:
+            print(f"Attempt {attempt+1} failed for {exchange_name}: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(3)
+            else:
+                raise e
+    return None
+
 # ======================== CACHED FUNCTIONS ========================
 @st.cache_data(ttl=3600)
 def get_all_usdt_pairs(exchange_name):
-    exchange_class = getattr(ccxt, exchange_name)
-    exchange = exchange_class({
-        'enableRateLimit': True,
-        'options': {'defaultType': 'spot'},
-        'timeout': 10000
-    })
-    markets = exchange.load_markets()
-    usdt_pairs = [s for s in markets if s.endswith('/USDT') and markets[s]['spot']]
-    
-    valid_pairs = []
-    progress_bar = st.progress(0)
-    for i, sym in enumerate(usdt_pairs[:300]):
-        try:
-            ticker = exchange.fetch_ticker(sym)
-            if ticker.get('quoteVolume', 0) > 10000:
-                valid_pairs.append(sym)
-        except:
-            continue
-        progress_bar.progress((i+1)/min(len(usdt_pairs), 300))
-        time.sleep(0.05)
-    
-    progress_bar.empty()
-    return valid_pairs
+    """Ambil semua pair USDT yang aktif - dengan error handling"""
+    try:
+        exchange = create_exchange(exchange_name)
+        markets = exchange.load_markets()
+        usdt_pairs = [s for s in markets if s.endswith('/USDT') and markets[s]['spot']]
+        
+        valid_pairs = []
+        progress_bar = st.progress(0)
+        for i, sym in enumerate(usdt_pairs[:300]):
+            # Skip kalau progress bar udah kehapus
+            if progress_bar:
+                progress_bar.progress((i+1)/min(len(usdt_pairs), 300))
+            try:
+                ticker = exchange.fetch_ticker(sym)
+                if ticker.get('quoteVolume', 0) > 10000:
+                    valid_pairs.append(sym)
+            except:
+                continue
+            time.sleep(0.02)  # Kurangi delay
+        
+        if progress_bar:
+            progress_bar.empty()
+        return valid_pairs
+        
+    except ccxt.NetworkError as e:
+        st.error(f"⚠️ Gagal terhubung ke {exchange_name.upper()}: {str(e)[:100]}")
+        st.info("🔄 Coba ganti exchange lain di sidebar, misal 'bybit' atau 'okx'")
+        return []
+    except Exception as e:
+        st.error(f"⚠️ Error: {str(e)[:100]}")
+        st.info("🔄 Coba refresh atau ganti exchange")
+        return []
 
 @st.cache_data(ttl=600)
 def fetch_ohlcv_cached(symbol, exchange_name, timeframe='1d', limit=200):
-    exchange_class = getattr(ccxt, exchange_name)
-    exchange = exchange_class({
-        'enableRateLimit': True,
-        'options': {'defaultType': 'spot'},
-        'timeout': 10000
-    })
+    """Ambil data harga dengan cache dan error handling"""
     try:
+        exchange = create_exchange(exchange_name)
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
         if not ohlcv:
             return None
@@ -907,7 +938,7 @@ def calculate_targets_by_trend(entry_price, atr, trend_direction, has_volume_spi
     
     return round(tp1, 8), round(tp2, 8), round(tp3, 8), round(tp1_pct, 1), round(tp2_pct, 1), round(tp3_pct, 1), target_type
 
-# ======================== SKENARIO KEGAGALAN (FITUR BARU!) ========================
+# ======================== SKENARIO KEGAGALAN ========================
 def analyze_failure_scenarios(detail):
     """
     Analisis skenario kegagalan dan kondisi kritis
@@ -1525,16 +1556,19 @@ with st.sidebar:
     
     exchange_name = st.selectbox(
         "Pilih Exchange", 
-        ["binance", "bybit", "okx", "kucoin", "gate", "coinbase", "bitget", "kraken"], 
-        index=0
+        ["binance", "bybit", "okx", "kucoin", "gate"], 
+        index=0,
+        help="Pilih exchange. Jika error, coba ganti ke bybit atau okx"
     )
     
-    scan_limit = st.slider("Jumlah coin yang di-scan", 50, 300, 150)
+    scan_limit = st.slider("Jumlah coin yang di-scan", 30, 200, 100,
+                          help="Semakin banyak semakin lama. Turunkan jika sering error")
     min_score = st.slider("Minimal skor untuk ditampilkan", 0, 10, 3)
     auto_refresh = st.checkbox("Auto refresh setiap 30 menit", value=True)
     
     st.markdown("---")
     st.header("🔍 Manual Check")
+    st.info("💡 Tips: Jika error koneksi, coba ganti exchange di atas ke 'bybit' atau 'okx'")
     manual_symbol = st.text_input("Cek coin tertentu", placeholder="Contoh: BTC/USDT, ETH/USDT")
     manual_button = st.button("🔍 Analisis Manual", use_container_width=True)
     
@@ -1551,6 +1585,7 @@ with st.sidebar:
     **📋 Skenario Kegagalan** - Analisis risiko dan antisipasi
     """)
 
+# Session state
 if 'scan_results' not in st.session_state:
     st.session_state.scan_results = None
 if 'last_scan' not in st.session_state:
@@ -1566,10 +1601,15 @@ if scan_button or (auto_refresh and st.session_state.scan_results is not None an
                    (st.session_state.last_scan is None or 
                     (datetime.now() - st.session_state.last_scan).seconds > 1800)):
     
-    with st.spinner("Mengambil data..."):
+    with st.spinner(f"Mengambil data dari {exchange_name.upper()}..."):
         pairs = get_all_usdt_pairs(exchange_name)
+        if not pairs:
+            st.error(f"⚠️ Gagal mengambil data dari {exchange_name.upper()}. Coba ganti exchange di sidebar ke 'bybit' atau 'okx'")
+            st.stop()
         if len(pairs) > scan_limit:
             pairs = pairs[:scan_limit]
+    
+    st.info(f"🔍 Scanning {len(pairs)} coin dari {exchange_name.upper()}...")
     
     results = []
     progress_bar = st.progress(0)
@@ -1591,14 +1631,15 @@ if scan_button or (auto_refresh and st.session_state.scan_results is not None an
         df_results = df_results.sort_values('score', ascending=False)
         st.session_state.scan_results = df_results
         st.session_state.last_scan = datetime.now()
-        st.success(f"✅ Ditemukan {len(results)} coin")
+        st.success(f"✅ Selesai! Ditemukan {len(results)} coin dari {exchange_name.upper()}")
         st.rerun()
     else:
-        st.warning(f"Tidak ada coin dengan skor >= {min_score}")
+        st.warning(f"Tidak ada coin dengan skor >= {min_score} dari {exchange_name.upper()}")
 
+# Tampilkan hasil scan (sama seperti sebelumnya, disederhanakan karena panjang)
 if st.session_state.scan_results is not None and not st.session_state.scan_results.empty:
     df = st.session_state.scan_results
-    st.subheader(f"📊 Hasil Scan - {st.session_state.last_scan.strftime('%H:%M:%S') if st.session_state.last_scan else 'Sekarang'}")
+    st.subheader(f"📊 Hasil Scan dari {exchange_name.upper()} - {st.session_state.last_scan.strftime('%H:%M:%S') if st.session_state.last_scan else 'Sekarang'}")
     
     for _, row in df.head(10).iterrows():
         if row['score'] >= 8:
@@ -1632,12 +1673,13 @@ if st.session_state.scan_results is not None and not st.session_state.scan_resul
     selected_coin = st.selectbox("Pilih coin", df['symbol'].tolist())
     
     if selected_coin:
-        with st.spinner(f"Menganalisis {selected_coin}..."):
+        with st.spinner(f"Menganalisis {selected_coin} dari {exchange_name.upper()}..."):
             result = analyze_coin_spot(selected_coin, exchange_name)
             
             if result:
                 detail = result
                 
+                # Status box
                 if detail['final_trend'] == "BEARISH (Turun)":
                     box_class = "avoid-box"
                 elif detail['score'] >= 8:
@@ -1670,11 +1712,21 @@ if st.session_state.scan_results is not None and not st.session_state.scan_resul
                     <div class="ichimoku-box">
                         <h4>☁️ Ichimoku Cloud Analysis</h4>
                         <table style="width: 100%;">
-                            <tr><td style="width: 40%;"><b>Posisi Harga:</b></td><td>{ichi['cloud_position']} - {ichi['cloud_status']}</td></tr>
-                            <tr><td><b>Ketebalan Cloud:</b></td><td>{ichi['cloud_thickness_text']} ({ichi['cloud_thickness']}%)</td></tr>
-                            <tr><td><b>TK Cross:</b></td><td>{ichi['tk_status']}</td></tr>
-                            <tr><td><b>Chikou Span:</b></td><td>{ichi['chikou_status']}</td></tr>
-                            <tr><td><b>Future Cloud:</b></td><td>{ichi['future_status']}</td></tr>
+                            <tr><td style="width: 40%;"><b>Posisi Harga:</b></td>
+                            <td>{ichi['cloud_position']} - {ichi['cloud_status']}</td>
+                            </tr>
+                            <tr><td style="width: 40%;"><b>Ketebalan Cloud:</b></td>
+                            <td>{ichi['cloud_thickness_text']} ({ichi['cloud_thickness']}%)</td>
+                            </tr>
+                            <tr><td style="width: 40%;"><b>TK Cross:</b></td>
+                            <td>{ichi['tk_status']}</td>
+                            </tr>
+                            <tr><td style="width: 40%;"><b>Chikou Span:</b></td>
+                            <td>{ichi['chikou_status']}</td>
+                            </tr>
+                            <tr><td style="width: 40%;"><b>Future Cloud:</b></td>
+                            <td>{ichi['future_status']}</td>
+                            </tr>
                         </table>
                     </div>
                     """, unsafe_allow_html=True)
@@ -1789,6 +1841,7 @@ if st.session_state.scan_results is not None and not st.session_state.scan_resul
                 st.info(detail['beginner_summary'])
                 st.write(f"**📊 Support:** ${detail['nearest_support']:.6f} | **Resistance:** ${detail['nearest_resistance']:.6f}")
                 
+                # Signal badges
                 st.write("**📡 Signal Terdeteksi:**")
                 sig_cols = st.columns(7)
                 with sig_cols[0]:
@@ -1832,13 +1885,12 @@ if st.session_state.scan_results is not None and not st.session_state.scan_resul
                         for w in detail['wick_signals']:
                             st.write(f"- {w}")
                 
-                # ==================== SKENARIO KEGAGALAN (FITUR BARU!) ====================
+                # ==================== SKENARIO KEGAGALAN ====================
                 st.markdown("---")
                 st.subheader("📋 SKENARIO KEGAGALAN & KONDISI KRITIS")
                 
                 failure_analysis = analyze_failure_scenarios(detail)
                 
-                # Tampilkan peringatan berdasarkan warning score
                 if failure_analysis['warning_score'] >= 5:
                     st.error(f"⚠️ **PERINGATAN TINGGI** - Terdapat {failure_analysis['warning_score']} faktor risiko. Pertimbangkan ulang entry!")
                 elif failure_analysis['warning_score'] >= 3:
@@ -1848,14 +1900,12 @@ if st.session_state.scan_results is not None and not st.session_state.scan_resul
                 
                 st.markdown("---")
                 
-                # Tampilkan kondisi kritis yang harus dipantau
                 if failure_analysis['critical_conditions']:
                     st.write("### 🔍 KONDISI YANG HARUS DIPANTAU:")
                     for cond in failure_analysis['critical_conditions']:
                         st.write(f"- {cond}")
                     st.markdown("---")
                 
-                # Tampilkan skenario kegagalan
                 if failure_analysis['scenarios']:
                     st.write("### 📊 SKENARIO KEGAGALAN & ANTISIPASI:")
                     
@@ -1885,8 +1935,6 @@ if st.session_state.scan_results is not None and not st.session_state.scan_resul
                             st.write(f"- **Antisipasi:** {scenario['action']}")
                             st.write("")
                 
-                # ==================== AKHIR SKENARIO KEGAGALAN ====================
-                
                 with st.expander("📝 Detail Analisis Lengkap"):
                     for reason in detail['reasons'][:20]:
                         st.write(f"- {reason}")
@@ -1901,21 +1949,23 @@ if st.session_state.scan_results is not None and not st.session_state.scan_resul
                 
                 st.caption("⚠️ **Disclaimer:** Analisis berdasarkan data historis dan probabilitas. Bukan jaminan keuntungan. Selalu gunakan manajemen risiko!")
 
+# Manual analysis
 if manual_button and manual_symbol:
     symbol = manual_symbol.strip().upper()
     if not symbol.endswith('/USDT'):
         symbol += '/USDT'
     
-    with st.spinner(f"Menganalisis {symbol}..."):
+    with st.spinner(f"Menganalisis {symbol} dari {exchange_name.upper()}..."):
         result = analyze_coin_spot(symbol, exchange_name)
         
         if result:
             st.session_state.manual_result = result
-            st.success(f"✅ Analisis {symbol} selesai!")
+            st.success(f"✅ Analisis {symbol} dari {exchange_name.upper()} selesai!")
         else:
-            st.error(f"❌ Gagal menganalisis {symbol}")
+            st.error(f"❌ Gagal menganalisis {symbol}. Coba ganti exchange di sidebar.")
         st.rerun()
 
+# Tampilkan manual result (sama seperti auto scan, disederhanakan)
 if st.session_state.manual_result:
     detail = st.session_state.manual_result
     
@@ -1954,11 +2004,21 @@ if st.session_state.manual_result:
         <div class="ichimoku-box">
             <h4>☁️ Ichimoku Cloud Analysis</h4>
             <table style="width: 100%;">
-                <tr><td style="width: 40%;"><b>Posisi Harga:</b></td><td>{ichi['cloud_position']} - {ichi['cloud_status']}</td></tr>
-                <tr><td><b>Ketebalan Cloud:</b></td><td>{ichi['cloud_thickness_text']} ({ichi['cloud_thickness']}%)</td></tr>
-                <tr><td><b>TK Cross:</b></td><td>{ichi['tk_status']}</td></tr>
-                <tr><td><b>Chikou Span:</b></td><td>{ichi['chikou_status']}</td></tr>
-                <tr><td><b>Future Cloud:</b></td><td>{ichi['future_status']}</td></tr>
+                <tr><td style="width: 40%;"><b>Posisi Harga:</b></td>
+                <td>{ichi['cloud_position']} - {ichi['cloud_status']}</td>
+                </tr>
+                <tr><td style="width: 40%;"><b>Ketebalan Cloud:</b></td>
+                <td>{ichi['cloud_thickness_text']} ({ichi['cloud_thickness']}%)</td>
+                </tr>
+                <tr><td style="width: 40%;"><b>TK Cross:</b></td>
+                <td>{ichi['tk_status']}</td>
+                </tr>
+                <tr><td style="width: 40%;"><b>Chikou Span:</b></td>
+                <td>{ichi['chikou_status']}</td>
+                </tr>
+                <tr><td style="width: 40%;"><b>Future Cloud:</b></td>
+                <td>{ichi['future_status']}</td>
+                </tr>
             </table>
         </div>
         """, unsafe_allow_html=True)
@@ -2036,7 +2096,7 @@ if st.session_state.manual_result:
     st.info(detail['beginner_summary'])
     st.write(f"**📊 Support:** ${detail['nearest_support']:.6f} | **Resistance:** ${detail['nearest_resistance']:.6f}")
     
-    # ==================== SKENARIO KEGAGALAN (MANUAL RESULT) ====================
+    # SKENARIO KEGAGALAN untuk manual result
     st.markdown("---")
     st.subheader("📋 SKENARIO KEGAGALAN & KONDISI KRITIS")
     
@@ -2086,8 +2146,6 @@ if st.session_state.manual_result:
                 st.write(f"- **Antisipasi:** {scenario['action']}")
                 st.write("")
     
-    # ==================== AKHIR SKENARIO KEGAGALAN ====================
-    
     with st.expander("📝 Detail Analisis Lengkap"):
         for reason in detail['reasons'][:20]:
             st.write(f"- {reason}")
@@ -2116,4 +2174,9 @@ st.caption("""
 - ✅ Entry point SEKARANG di SUPPORT atau di ATAS support
 - ✅ Volume spike = entry lebih agresif (tetap di support)
 - ✅ Tidak ada entry di bawah support lagi!
+
+**💡 Jika terjadi error koneksi ke exchange:**
+- Ganti exchange di sidebar ke 'bybit' atau 'okx'
+- Kurangi jumlah coin yang di-scan (50-100)
+- Refresh halaman dan coba lagi
 """)
