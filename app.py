@@ -1,4 +1,4 @@
-import streamlit as stDATA FETCH ========================
+import streamlit as st
 import ccxt
 import pandas as pd
 import numpy as np
@@ -6100,19 +6100,10 @@ def analyze_coin_full_advanced(symbol, exchange_name):
     try:
         trading_date = current_trading_date_str()
         
-        # 🔥 FIX BYBIT - COBA BINANCE DULU KALAU BYBIT
-        actual_exchange = exchange_name
-        if exchange_name == 'bybit':
-            # Test Bybit dulu
-            test_df = fetch_ohlcv_cached(symbol, 'bybit', '1d', 5)
-            if test_df is None:
-                st.warning(f"⚠️ Bybit error, switching to Binance for {symbol}")
-                actual_exchange = 'binance'
-        
         timeframes = ['15m', '1h', '4h', '1w', '1d']
         with ThreadPoolExecutor(max_workers=min(len(timeframes), 5)) as executor:
             future_to_tf = {
-                executor.submit(fetch_ohlcv_cached, symbol, actual_exchange, tf, 700 if tf == '15m' else 400): tf
+                executor.submit(fetch_ohlcv_cached, symbol, exchange_name, tf, 700 if tf == '15m' else 400): tf
                 for tf in timeframes
             }
             results = {}
@@ -6199,8 +6190,10 @@ def analyze_coin_full_advanced(symbol, exchange_name):
         inst_candle = detect_institutional_candle(daily_ind)
         absorption = detect_absorption(daily_ind)
         
+        # NEW: Death Cat Bounce Detection
         death_cat = detect_death_cat_bounce(daily_ind, symbol)
         
+        # NEW: Bandarmologi Enhanced Signals
         whale_activity = detect_whale_activity_enhanced(df_15m, df_1h)
         fake_breakout = detect_fake_breakout(daily_ind, ress[0]['price'] if ress else None)
         bandar_reversal = detect_bandar_reversal_candles(daily_ind)
@@ -6211,6 +6204,7 @@ def analyze_coin_full_advanced(symbol, exchange_name):
             'reversal_candle': bandar_reversal
         }
         
+        # NEW: All Technical Indicators
         pivot_points = calculate_pivot_points(daily_ind)
         harmonic_patterns = detect_harmonic_patterns(daily_ind)
         atr_trailing_stop = calculate_atr_trailing_stop(daily_ind, period=14, multiplier=2.0)
@@ -6414,6 +6408,7 @@ def analyze_coin_full_advanced(symbol, exchange_name):
                 'adl': daily_ind['ADL'].iloc[-1] if 'ADL' in daily_ind.columns else None,
                 'divergence': daily_ind['ADL_Divergence'].iloc[-1] if 'ADL_Divergence' in daily_ind.columns else 'N/A',
             },
+            # NEW TECHNICALS
             'pivot_points': pivot_points,
             'harmonic_patterns': harmonic_patterns,
             'atr_trailing_stop': atr_trailing_stop,
@@ -6430,12 +6425,12 @@ def analyze_coin_full_advanced(symbol, exchange_name):
             'force_index': force_index
         }
         
-        save_predictions(symbol, actual_exchange, trading_date, predictions_7d)
-        save_full_snapshot(symbol, actual_exchange, trading_date, result)
+        save_predictions(symbol, exchange_name, trading_date, predictions_7d)
+        save_full_snapshot(symbol, exchange_name, trading_date, result)
         return result
-    except Exception as e:
-        st.error(f"❌ Error: {str(e)[:200]}")
+    except Exception:
         return None
+
 # ======================== RENDER RESULT (SINGKAT) ========================
 def render_result_advanced(dr):
     if dr is None or not isinstance(dr, dict):
