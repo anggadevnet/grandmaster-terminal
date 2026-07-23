@@ -329,136 +329,125 @@ def load_predictions(symbol, exchange, trading_date):
     except Exception:
         return None
 
+# ======================== KONFIGURASI BYBIT ========================
+BYBIT_ENDPOINTS = [
+    'https://api.bybit.com',
+    'https://api.bytick.com',
+    'https://api.bybit.id',
+    'https://api.bybitglobal.com',
+    'https://api.bybknet.com',
+]
+
+def fetch_bybit_warp(symbol, timeframe='1d', limit=400):
+    """
+    🔥 FETCH BYBIT PAKAI WARP (LEWAT GITHUB ACTIONS)
+    """
+    import requests
+    
+    tf_map = {
+        '1m': '1', '3m': '3', '5m': '5', '15m': '15',
+        '30m': '30', '1h': '60', '2h': '120', '4h': '240',
+        '6h': '360', '12h': '720', '1d': 'D', '1w': 'W'
+    }
+    
+    symbol_clean = symbol.replace('/USDT', '')
+    
+    params = {
+        'category': 'spot',
+        'symbol': symbol_clean,
+        'interval': tf_map.get(timeframe, 'D'),
+        'limit': limit
+    }
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    }
+    
+    # 🔥 DETECT APAKAH PAKAI WARP
+    use_warp = os.environ.get('BYBIT_USE_WARP', 'false').lower() == 'true'
+    
+    # 🔥 KALAU WARP AKTIF, PAKAI ENDPOINT UTAMA
+    if use_warp:
+        endpoints = ['https://api.bybit.com']  # WARP ga perlu endpoint alternatif
+    else:
+        endpoints = BYBIT_ENDPOINTS  # COBA SEMUA
+    
+    for endpoint in endpoints:
+        try:
+            url = f"{endpoint}/v5/market/kline"
+            
+            # 🔥 KALAU WARP, PAKAI SESSION DENGAN PROXY
+            if use_warp:
+                session = requests.Session()
+                # WARP biasanya di 127.0.0.1:4000 atau 127.0.0.1:1080
+                session.proxies = {
+                    'http': 'socks5://127.0.0.1:1080',
+                    'https': 'socks5://127.0.0.1:1080'
+                }
+                r = session.get(url, params=params, headers=headers, timeout=30)
+            else:
+                r = requests.get(url, params=params, headers=headers, timeout=30)
+            
+            data = r.json()
+            
+            if data.get('retCode') == 0:
+                candles = data['result']['list']
+                if candles and len(candles) > 0:
+                    df = pd.DataFrame(candles, columns=['timestamp','open','high','low','close','volume','turnover'])
+                    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
+                    for col in ['open','high','low','close','volume']:
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                    df = df.sort_values('timestamp').reset_index(drop=True)
+                    return df[['timestamp','open','high','low','close','volume']]
+        except:
+            continue
+    
+    return None
+
 # ======================== DATA FETCH ========================
 @st.cache_data(ttl=120, hash_funcs={pd.DataFrame: lambda df: hash(df.to_json()) if df is not None else "None"})
 def fetch_ohlcv_cached(symbol, exchange_name, timeframe='1d', limit=400):
     
-    # 🔥 BYBIT PAKE MULTI ENDPOINT (COBA SAMPE BERHASIL!)
+    # 🔥 BYBIT - PAKAI WARP ATAU MULTI ENDPOINT
     if exchange_name == 'bybit':
-        import requests
-        
-        # 🔥 DAFTAR ENDPOINT BYBIT (URUTAN PRIORITAS)
-        endpoints = [
-            'https://api.bybit.com',      # Global utama
-            'https://api.bytick.com',     # Alternatif 1 (yang kamu pake)
-            'https://api.bybit.id',       # Indonesia (paling cocok!)
-            'https://api.bybitglobal.com', # Regional tertentu
-            'https://api.bybknet.com',    # Alternatif 2
-            'https://api.bybit.nl',       # Netherlands
-            'https://api.bybit.tr',       # Turkey
-            'https://api.bybit.kz',       # Kazakhstan
-            'https://api.bybit.ae',       # UAE
-        ]
-        
-        tf_map = {
-            '1m': '1', '3m': '3', '5m': '5', '15m': '15',
-            '30m': '30', '1h': '60', '2h': '120', '4h': '240',
-            '6h': '360', '12h': '720', '1d': 'D', '1w': 'W'
-        }
-        
-        symbol_clean = symbol.replace('/USDT', '')
-        
-        params = {
-            'category': 'spot',
-            'symbol': symbol_clean,
-            'interval': tf_map.get(timeframe, 'D'),
-            'limit': limit
-        }
-        
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-        
-        # 🔥 COBA SETIAP ENDPOINT SAMPE BERHASIL
-        last_error = None
-        for endpoint in endpoints:
-            try:
-                url = f"{endpoint}/v5/market/kline"
-                
-                r = requests.get(
-                    url,
-                    params=params,
-                    headers=headers,
-                    timeout=15
-                )
-                
-                data = r.json()
-                
-                if data.get('retCode') == 0:
-                    candles = data['result']['list']
-                    
-                    if candles and len(candles) > 0:
-                        df = pd.DataFrame(candles, columns=['timestamp','open','high','low','close','volume','turnover'])
-                        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
-                        for col in ['open','high','low','close','volume']:
-                            df[col] = pd.to_numeric(df[col], errors='coerce')
-                        df = df.sort_values('timestamp').reset_index(drop=True)
-                        
-                        # 🔥 KALAU BERHASIL, RETURN LANGSUNG!
-                        return df[['timestamp','open','high','low','close','volume']]
-                        
-            except Exception as e:
-                last_error = str(e)
-                continue
-        
-        # 🔥 SEMUA ENDPOINT GAGAL, COBA BINANCE
-        return fetch_ohlcv_cached(symbol, 'binance', timeframe, limit)
+        try:
+            # COBA WARP DULU
+            result = fetch_bybit_warp(symbol, timeframe, limit)
+            if result is not None:
+                return result
+            
+            # WARP GAGAL, COBA BINANCE
+            return fetch_ohlcv_cached(symbol, 'binance', timeframe, limit)
+        except:
+            return fetch_ohlcv_cached(symbol, 'binance', timeframe, limit)
     
-    # 🔥 BINANCE, OKX, KUCOIN PAKAI CCXT (INI YANG UDAH BERHASIL)
+    # 🔥 BINANCE, OKX, KUCOIN PAKAI CCXT
     try:
         exchange_class = getattr(ccxt, exchange_name)
-        
         config = {
             'enableRateLimit': True,
             'options': {'defaultType': 'spot'},
             'timeout': 60000,
-            'headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
+            'headers': {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         }
-        
-        if exchange_name == 'binance':
-            config['urls'] = {
-                'api': {
-                    'public': 'https://api.binance.com',
-                    'private': 'https://api.binance.com'
-                }
-            }
-        elif exchange_name == 'okx':
-            config['urls'] = {
-                'api': {
-                    'public': 'https://www.okx.com',
-                    'private': 'https://www.okx.com'
-                }
-            }
-        elif exchange_name == 'kucoin':
-            config['urls'] = {
-                'api': {
-                    'public': 'https://api.kucoin.com',
-                    'private': 'https://api.kucoin.com'
-                }
-            }
-        
         exchange = exchange_class(config)
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-        
-        if not ohlcv or len(ohlcv) < 5:
-            return None
-            
-        df = pd.DataFrame(ohlcv, columns=['timestamp','open','high','low','close','volume'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
-        df = df.dropna().reset_index(drop=True)
-        for col in ['open','high','low','close','volume']:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-        return df
-        
-    except Exception:
+        if ohlcv and len(ohlcv) > 5:
+            df = pd.DataFrame(ohlcv, columns=['timestamp','open','high','low','close','volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
+            df = df.dropna().reset_index(drop=True)
+            for col in ['open','high','low','close','volume']:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+            return df
+    except:
         if exchange_name == 'binance':
             try:
                 return fetch_ohlcv_cached(symbol, 'okx', timeframe, limit)
             except:
                 return None
         return None
+    
+    return None
 
 # ======================== UTILS ========================
 def safe_get(v, default=np.nan):
