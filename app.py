@@ -332,99 +332,63 @@ def load_predictions(symbol, exchange, trading_date):
 # ======================== DATA FETCH ========================
 @st.cache_data(ttl=120, hash_funcs={pd.DataFrame: lambda df: hash(df.to_json()) if df is not None else "None"})
 def fetch_ohlcv_cached(symbol, exchange_name, timeframe='1d', limit=400):
-    # 🔥 BYBIT PAKE PROXY
-    if exchange_name == 'bybit':
-        try:
-            import requests
-            
-            tf_map = {
-                '1m': '1', '5m': '5', '15m': '15', '30m': '30',
-                '1h': '60', '4h': '240', '1d': 'D', '1w': 'W'
-            }
-            
-            symbol_clean = symbol.replace('/USDT', '')
-            
-            url = "https://api.bybit.com/v5/market/kline"
-            params = {
-                'category': 'spot',
-                'symbol': symbol_clean,
-                'interval': tf_map.get(timeframe, 'D'),
-                'limit': limit
-            }
-            
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-            
-            # 🔥 PROXY LIST (COBA SALAH SATU)
-            proxies_list = [
-                {'http': 'http://159.89.0.186:3128', 'https': 'http://159.89.0.186:3128'},
-                {'http': 'http://104.131.77.135:3128', 'https': 'http://104.131.77.135:3128'},
-                {'http': 'http://45.79.16.145:3128', 'https': 'http://45.79.16.145:3128'},
-                {'http': 'http://139.59.117.138:3128', 'https': 'http://139.59.117.138:3128'},
-                {'http': 'http://159.89.1.227:3128', 'https': 'http://159.89.1.227:3128'},
-                {'http': 'http://178.128.133.154:3128', 'https': 'http://178.128.133.154:3128'},
-            ]
-            
-            # 🔥 COBA SETIAP PROXY SAMPE BERHASIL
-            for proxy in proxies_list:
-                try:
-                    r = requests.get(
-                        url, 
-                        params=params, 
-                        headers=headers, 
-                        proxies=proxy,
-                        timeout=15
-                    )
-                    data = r.json()
-                    
-                    if data.get('retCode') == 0:
-                        result = data.get('result', {})
-                        candles = result.get('list', [])
-                        
-                        if candles and len(candles) > 0:
-                            df = pd.DataFrame(candles, columns=['timestamp','open','high','low','close','volume','turnover'])
-                            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
-                            for col in ['open','high','low','close','volume']:
-                                df[col] = pd.to_numeric(df[col], errors='coerce')
-                            df = df.sort_values('timestamp').reset_index(drop=True)
-                            return df[['timestamp','open','high','low','close','volume']]
-                except:
-                    continue
-            
-            # 🔥 SEMUA PROXY GAGAL, COBA BINANCE
-            return fetch_ohlcv_cached(symbol, 'binance', timeframe, limit)
-                
-        except Exception:
-            return fetch_ohlcv_cached(symbol, 'binance', timeframe, limit)
-    
-    # 🔥 BINANCE, OKX, KUCOIN PAKAI CCXT
     try:
         exchange_class = getattr(ccxt, exchange_name)
+        
         config = {
             'enableRateLimit': True,
             'options': {'defaultType': 'spot'},
             'timeout': 60000,
-            'headers': {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+            'headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
         }
+        
+        # 🔥 BYBIT PAKAI PROXY
+        if exchange_name == 'bybit':
+            config['urls'] = {
+                'api': {
+                    'public': 'https://api.bybit.com',
+                    'private': 'https://api.bybit.com'
+                }
+            }
+            config['options']['defaultType'] = 'spot'
+            config['options']['adjustForTimeDifference'] = True
+            # 🔥 PROXY CCXT
+            config['proxies'] = {
+                'http': 'http://159.89.0.186:3128',
+                'https': 'http://159.89.0.186:3128'
+            }
+        
         exchange = exchange_class(config)
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-        if ohlcv and len(ohlcv) > 5:
-            df = pd.DataFrame(ohlcv, columns=['timestamp','open','high','low','close','volume'])
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
-            df = df.dropna().reset_index(drop=True)
-            for col in ['open','high','low','close','volume']:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-            return df
-    except:
-        if exchange_name == 'binance':
+        
+        # 🔥 BYBIT PAKAI PARAMS CATEGORY SPOT
+        if exchange_name == 'bybit':
+            ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit, params={'category': 'spot'})
+        else:
+            ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+        
+        if not ohlcv or len(ohlcv) < 5:
+            return None
+            
+        df = pd.DataFrame(ohlcv, columns=['timestamp','open','high','low','close','volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
+        df = df.dropna().reset_index(drop=True)
+        for col in ['open','high','low','close','volume']:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        return df
+        
+    except Exception:
+        # 🔥 KALAU BYBIT GAGAL, FALLBACK KE BINANCE
+        if exchange_name == 'bybit':
             try:
-                return fetch_ohlcv_cached(symbol, 'okx', timeframe, limit)
+                return fetch_ohlcv_cached(symbol, 'binance', timeframe, limit)
             except:
-                return None
+                try:
+                    return fetch_ohlcv_cached(symbol, 'okx', timeframe, limit)
+                except:
+                    return None
         return None
-    
-    return None
 
 # ======================== UTILS ========================
 def safe_get(v, default=np.nan):
