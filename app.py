@@ -336,30 +336,47 @@ def fetch_ohlcv_cached(symbol, exchange_name, timeframe='1d', limit=400):
     if exchange_name == 'bybit':
         try:
             import requests
-            tf_map = {'15m': '15', '1h': '60', '4h': '240', '1d': 'D', '1w': 'W'}
+            
+            tf_map = {
+                '1m': '1', '5m': '5', '15m': '15', '30m': '30',
+                '1h': '60', '4h': '240', '1d': 'D', '1w': 'W'
+            }
+            
+            symbol_clean = symbol.replace('/USDT', '')
+            
+            # 🔥 COBA PAKAI ENDPOINT INI
+            url = "https://api.bybit.com/v5/market/kline"
             params = {
                 'category': 'spot',
-                'symbol': symbol.replace('/USDT', ''),
+                'symbol': symbol_clean,
                 'interval': tf_map.get(timeframe, 'D'),
                 'limit': limit
             }
-            r = requests.get(
-                'https://api.bybit.com/v5/market/kline',
-                params=params,
-                headers={'User-Agent': 'Mozilla/5.0'},
-                timeout=30
-            )
+            
+            r = requests.get(url, params=params, timeout=30)
             data = r.json()
+            
+            # 🔥 CEK RESPONSE
             if data.get('retCode') == 0:
-                candles = data['result']['list']
-                df = pd.DataFrame(candles, columns=['timestamp','open','high','low','close','volume','turnover'])
-                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
-                for col in ['open','high','low','close','volume']:
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
-                df = df.sort_values('timestamp').reset_index(drop=True)
-                return df[['timestamp','open','high','low','close','volume']]
-        except:
-            # BYBIT GAGAL, COBA BINANCE
+                result = data.get('result', {})
+                candles = result.get('list', [])
+                
+                if candles and len(candles) > 0:
+                    df = pd.DataFrame(candles, columns=['timestamp','open','high','low','close','volume','turnover'])
+                    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
+                    for col in ['open','high','low','close','volume']:
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                    df = df.sort_values('timestamp').reset_index(drop=True)
+                    return df[['timestamp','open','high','low','close','volume']]
+                else:
+                    st.warning(f"⚠️ Bybit: No data for {symbol_clean}")
+                    return fetch_ohlcv_cached(symbol, 'binance', timeframe, limit)
+            else:
+                st.warning(f"⚠️ Bybit Error: {data}")
+                return fetch_ohlcv_cached(symbol, 'binance', timeframe, limit)
+                
+        except Exception as e:
+            st.warning(f"⚠️ Bybit Error: {str(e)}")
             return fetch_ohlcv_cached(symbol, 'binance', timeframe, limit)
     
     # 🔥 BINANCE, OKX, KUCOIN PAKAI CCXT
@@ -381,7 +398,6 @@ def fetch_ohlcv_cached(symbol, exchange_name, timeframe='1d', limit=400):
                 df[col] = pd.to_numeric(df[col], errors='coerce')
             return df
     except:
-        # FALLBACK
         if exchange_name == 'binance':
             try:
                 return fetch_ohlcv_cached(symbol, 'okx', timeframe, limit)
