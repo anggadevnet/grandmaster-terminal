@@ -6116,342 +6116,88 @@ def detect_breakout_readiness(df_15m, df_1h):
     
     return {'ready': ready, 'score': score, 'status': status, 'timeframe': timeframe, 'reasons': reasons}
 
-# ======================== ANALYZE COIN FULL ========================
-def analyze_coin_full_advanced(symbol, exchange_name):
+# ======================== DATA FETCH ========================
+@st.cache_data(ttl=120, hash_funcs={pd.DataFrame: lambda df: hash(df.to_json()) if df is not None else "None"})
+def fetch_ohlcv_cached(symbol, exchange_name, timeframe='1d', limit=400):
     try:
-        trading_date = current_trading_date_str()
+        exchange_class = getattr(ccxt, exchange_name)
         
-        timeframes = ['15m', '1h', '4h', '1w', '1d']
-        with ThreadPoolExecutor(max_workers=min(len(timeframes), 5)) as executor:
-            future_to_tf = {
-                executor.submit(fetch_ohlcv_cached, symbol, exchange_name, tf, 700 if tf == '15m' else 400): tf
-                for tf in timeframes
+        config = {
+            'enableRateLimit': True,
+            'options': {'defaultType': 'spot'},
+            'timeout': 60000,
+            'headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
-            results = {}
-            for future in as_completed(future_to_tf):
-                tf = future_to_tf[future]
+        }
+        
+        # 🔥 KHUSUS BYBIT
+        if exchange_name == 'bybit':
+            config['urls'] = {
+                'api': {
+                    'public': 'https://api.bybit.com',
+                    'private': 'https://api.bybit.com'
+                }
+            }
+            config['options']['adjustForTimeDifference'] = True
+            # 🔥 BYBIT PAKAI V5
+            config['options']['defaultType'] = 'spot'
+            
+        # 🔥 KHUSUS BINANCE
+        elif exchange_name == 'binance':
+            config['urls'] = {
+                'api': {
+                    'public': 'https://api.binance.com',
+                    'private': 'https://api.binance.com'
+                }
+            }
+            
+        # 🔥 KHUSUS OKX
+        elif exchange_name == 'okx':
+            config['urls'] = {
+                'api': {
+                    'public': 'https://www.okx.com',
+                    'private': 'https://www.okx.com'
+                }
+            }
+        
+        exchange = exchange_class(config)
+        
+        # 🔥 RETRY UNTUK BYBIT
+        max_retries = 3 if exchange_name == 'bybit' else 1
+        ohlcv = None
+        
+        for attempt in range(max_retries):
+            try:
+                ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+                if ohlcv and len(ohlcv) > 5:
+                    break
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    raise
+                time.sleep(2)
+        
+        if not ohlcv or len(ohlcv) < 5:
+            return None
+            
+        df = pd.DataFrame(ohlcv, columns=['timestamp','open','high','low','close','volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
+        df = df.dropna().reset_index(drop=True)
+        for col in ['open','high','low','close','volume']:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        return df
+        
+    except Exception as e:
+        # 🔥 KALAU BYBIT GAGAL, FALLBACK KE BINANCE
+        if exchange_name == 'bybit':
+            try:
+                return fetch_ohlcv_cached(symbol, 'binance', timeframe, limit)
+            except:
                 try:
-                    results[tf] = future.result()
-                except Exception:
-                    results[tf] = None
-        
-        df_15m = results.get('15m')
-        df_1h = results.get('1h')
-        df_4h = results.get('4h')
-        df_1w = results.get('1w')
-        df_d_raw = results.get('1d')
-        
-        wib_daily_df, daily_source = build_wib_daily_df(df_15m, df_d_raw)
-        if wib_daily_df is None:
-            return None
-        
-        daily_ind = calculate_indicators_upgraded(wib_daily_df)
-        if daily_ind is None:
-            return None
-        daily_ind = calculate_ichimoku_crypto(daily_ind)
-        daily_ind = calculate_obv_upgraded(daily_ind)
-        
-        for tf, name in [(df_4h, '4h'), (df_1h, '1h'), (df_1w, '1w')]:
-            if tf is not None:
-                tf_calc = calculate_indicators_upgraded(tf)
-                if tf_calc is not None:
-                    if name == '4h':
-                        df_4h = calculate_ichimoku_crypto(tf_calc)
-                    elif name == '1h':
-                        df_1h = tf_calc
-                    elif name == '1w':
-                        df_1w = calculate_ichimoku_crypto(tf_calc)
-        
-        if df_15m is not None:
-            df_15m = calculate_indicators_upgraded(df_15m)
-        
-        last = daily_ind.iloc[-1]
-        cp = float(last['close'])
-        current_price = cp
-        if df_15m is not None and len(df_15m) > 0:
-            current_price = float(df_15m['close'].iloc[-1])
-        
-        rsi = safe_get(last.get('RSI', np.nan), 50)
-        adx_v = safe_get(last.get('ADX', np.nan), 0)
-        atr = safe_get(last.get('ATR', np.nan), cp * 0.02)
-        st_dir = safe_get(last.get('Supertrend_Dir', np.nan), 0)
-        st_bull = st_dir == 1
-        cmf_v = safe_get(last.get('CMF', np.nan), 0)
-        tsi_v = safe_get(last.get('TSI', np.nan), 0)
-        kst_v = safe_get(last.get('KST', np.nan), 0)
-        ps_b = int(safe_get(last.get('PSAR_Bull', np.nan), 0)) == 1
-        hma_v = safe_get(last.get('HMA', np.nan), cp)
-        dema_v = safe_get(last.get('DEMA', np.nan), cp)
-        obv_up = bool(daily_ind['OBV_trend'].iloc[-1]) if 'OBV_trend' in daily_ind.columns else False
-        ab200 = bool(not pd.isna(last.get('MA200', np.nan)) and last['close'] > last['MA200'])
-        abvwap = bool(not pd.isna(last.get('VWAP', np.nan)) and last['close'] > last['VWAP'])
-        mb1d = bool(not pd.isna(last.get('MACD_Hist', np.nan)) and last['MACD_Hist'] > 0)
-        
-        bull_signals = calculate_bull_signals(
-            last, cp, st_bull, ps_b, tsi_v, kst_v, mb1d, obv_up, ab200, abvwap, cmf_v, hma_v, dema_v, rsi
-        )
-        
-        vol_regime, vol_mult = classify_volatility_regime_improved(daily_ind)
-        sups, ress = calculate_precise_sr(daily_ind, lookback=80)
-        fib = calculate_fibonacci(daily_ind)
-        chart_patterns = detect_chart_patterns_improved(daily_ind)
-        elliot = detect_elliot_wave_improved(daily_ind)
-        candle_patterns, candle_quality = detect_candlestick_patterns_advanced(daily_ind)
-        divs = detect_divergences_improved(daily_ind)
-        poc, vah, val = calculate_volume_profile_improved(daily_ind)
-        liq_data = compute_liquidity_levels(daily_ind)
-        mtf_score, mtf_desc = compute_mtf_confluence(df_15m, df_1h, df_4h, df_1w)
-        H_exp = hurst_exponent_fixed(daily_ind['close'].tail(100).values)
-        wyckoff_phase, wyckoff_msg, wyckoff_events = detect_wyckoff_improved(daily_ind)
-        bos_choch = detect_bos_choch(daily_ind)
-        bullish_fvg, bearish_fvg, filled_fvg = detect_fair_value_gap_improved(daily_ind)
-        nearest_fvg = get_nearest_fvg(bullish_fvg, bearish_fvg, current_price)
-        ob_data = detect_order_blocks_improved(daily_ind)
-        sweep = detect_liquidity_sweep(daily_ind)
-        inst_candle = detect_institutional_candle(daily_ind)
-        absorption = detect_absorption(daily_ind)
-        
-        # NEW: Death Cat Bounce Detection
-        death_cat = detect_death_cat_bounce(daily_ind, symbol)
-        
-        # NEW: Bandarmologi Enhanced Signals
-        whale_activity = detect_whale_activity_enhanced(df_15m, df_1h)
-        fake_breakout = detect_fake_breakout(daily_ind, ress[0]['price'] if ress else None)
-        bandar_reversal = detect_bandar_reversal_candles(daily_ind)
-        
-        bandar_signals = {
-            'whale': whale_activity,
-            'fake_breakout': fake_breakout,
-            'reversal_candle': bandar_reversal
-        }
-        
-        # NEW: All Technical Indicators
-        pivot_points = calculate_pivot_points(daily_ind)
-        harmonic_patterns = detect_harmonic_patterns(daily_ind)
-        atr_trailing_stop = calculate_atr_trailing_stop(daily_ind, period=14, multiplier=2.0)
-        heikin_ashi = calculate_heikin_ashi(daily_ind)
-        stoch_rsi = calculate_stoch_rsi(daily_ind, period=14, smooth=3)
-        money_flow_index = calculate_mfi(daily_ind, period=14)
-        aroon = calculate_aroon(daily_ind, period=25)
-        zig_zag = calculate_zig_zag(daily_ind, lookback=100, deviation=0.03)
-        cci = calculate_cci(daily_ind, period=20)
-        ultimate_oscillator = calculate_ultimate_oscillator(daily_ind, period1=7, period2=14, period3=28)
-        vortex = calculate_vortex(daily_ind, period=14)
-        mass_index = calculate_mass_index(daily_ind, period=9, ema_period=25)
-        rvi = calculate_rvi(daily_ind, period=10)
-        force_index = calculate_force_index(daily_ind, period=13)
-        
-        if "Spring" in wyckoff_phase:
-            mom = "🌱 WYCKOFF SPRING"
-        elif st_bull and adx_v > 25:
-            mom = "📊 ST+ADX KUAT"
-        elif st_bull:
-            mom = "📈 TREND NAIK"
-        elif "Accumulation" in wyckoff_phase:
-            mom = "⏳ ACCUMULATION"
-        else:
-            mom = "⚖️ NETRAL"
-        
-        raw_factors = compute_factor_ensemble_advanced(daily_ind, df_1w, df_1h, liq_data)
-        
-        if raw_factors:
-            corr_matrix = compute_correlation_matrix(raw_factors)
-            adj_weights = compute_ensemble_weights(raw_factors, corr_matrix)
-            fn = list(raw_factors.keys())
-            fs = np.array([raw_factors[k][0] for k in fn])
-            fw = np.array([adj_weights.get(k, raw_factors[k][1]) for k in fn])
-            tw = max(fw.sum(), 1e-10)
-            ws = float(np.sum(fs * fw) / tw)
-            agree_ratio = float(np.sum(np.sign(fs) == np.sign(ws))) / max(len(fs), 1)
-        else:
-            ws = 0.0
-            agree_ratio = 0.5
-        
-        safe_symbol = symbol.replace('/', '_')
-        if not st.session_state.get('ai_model_trained', False):
-            if _ai_predictor.load_models(safe_symbol):
-                st.write("✅ AI Model loaded from disk!")
-                st.session_state['ai_model_trained'] = True
-            else:
-                if daily_ind is not None and len(daily_ind) > 100:
-                    st.write("🧠 Training AI models (LSTM + Random Forest + LightGBM)...")
-                    _ai_predictor.train(daily_ind)
-                    _ai_predictor.save_models(safe_symbol)
-                    st.session_state['ai_model_trained'] = True
-                    st.write("✅ AI Model trained and saved to disk!")
-        
-        ai_pred = _ai_predictor.predict(daily_ind) if _ai_predictor.is_trained else {'signal': 0, 'confidence': 50}
-        smc_score = calculate_smart_money_score(daily_ind, liq_data, poc, val, vah, current_price)
-        advanced_data = {'ai_prediction': ai_pred}
-        pump_analysis = detect_pump_opportunity_upgraded(symbol, df_15m, df_1h, daily_ind, ress, sups, advanced_data)
-        tradeable, trade_reason = is_spot_tradeable(bull_signals, None, symbol, current_price)
-        trade = calc_trade_plan(daily_ind, sups, ress, poc, val, atr, current_price, symbol)
-        psp = pos_size(trade['conservative_entry'], trade['stop_loss']) if tradeable else 0.0
-        enhanced_trade = enhance_trade_plan_with_smc(trade, smc_score, nearest_fvg, current_price, atr)
-        
-        cv_result = cross_validate_signals({
-            'current_price': current_price,
-            'smc_score': smc_score,
-            'chart_patterns': chart_patterns,
-            'candle_patterns': candle_patterns,
-            'divs_1d': divs,
-            'elliot_wave': elliot,
-            'bos_choch': bos_choch,
-            'trade_plan': trade,
-            'symbol': symbol
-        })
-        
-        h0_ultra = None
-        if df_15m is not None and len(df_15m) >= 24:
-            h0_ultra = {
-                'open': float(df_15m['open'].iloc[-1]),
-                'high': float(df_15m['high'].iloc[-1]),
-                'low': float(df_15m['low'].iloc[-1]),
-                'close': float(df_15m['close'].iloc[-1])
-            }
-        
-        predictions_7d = []
-        pred_sum = {}
-        
-        try:
-            predictions_7d = predict_hlc_7d(
-                wib_daily_df, df_weekly=df_1w, h0_ultra=h0_ultra,
-                df_1h=df_1h, df_4h=df_4h, df_15m=df_15m,
-                trading_date=trading_date, symbol=symbol
-            )
-            if predictions_7d:
-                pred_sum = get_prediction_summary(predictions_7d)
-            else:
-                predictions_7d = predict_hlc_7d_simple(wib_daily_df, symbol)
-                if predictions_7d:
-                    pred_sum = get_prediction_summary(predictions_7d)
-        except Exception:
-            predictions_7d = predict_hlc_7d_simple(wib_daily_df, symbol)
-            if predictions_7d:
-                pred_sum = get_prediction_summary(predictions_7d)
-        
-        result = {
-            'symbol': symbol,
-            'current_price': current_price,
-            'open_wib_today': float(last['open']),
-            'high_wib_today': float(last['high']),
-            'low_wib_today': float(last['low']),
-            'close_wib_today': float(last['close']),
-            'daily_source': daily_source,
-            **trade,
-            'pos_size_pct': psp,
-            'atr': atr,
-            'rsi': round(rsi, 1),
-            'adx': round(adx_v, 1),
-            'supertrend_bull': st_bull,
-            'cmf': round(cmf_v, 3),
-            'tsi': round(tsi_v, 2),
-            'kst': round(kst_v, 2),
-            'psar_bull': ps_b,
-            'hma': hma_v,
-            'dema': dema_v,
-            'macd_bull_1d': mb1d,
-            'obv_rising': obv_up,
-            'above_ma200': ab200,
-            'above_vwap': abvwap,
-            'hurst': round(H_exp, 3),
-            'structure_desc': chart_patterns.get('description', 'N/A'),
-            'wyckoff_phase': wyckoff_phase,
-            'wyckoff_msg': wyckoff_msg,
-            'wyckoff_events': wyckoff_events,
-            'poc': poc,
-            'vah': vah,
-            'val': val,
-            'divs_1d': divs,
-            'candle_patterns': candle_patterns,
-            'candle_quality': candle_quality,
-            'supports': sups,
-            'resistances': ress,
-            'momentum': mom,
-            'bull_signals': bull_signals,
-            'spot_tradeable': tradeable,
-            'trade_reason': trade_reason,
-            'vol_regime': vol_regime,
-            'vol_mult': vol_mult,
-            'liq_data': liq_data,
-            'mtf_score': mtf_score,
-            'mtf_desc': mtf_desc,
-            'daily': daily_ind,
-            'tf_4h': df_4h,
-            'tf_1h': df_1h,
-            'tf_15m': df_15m,
-            'tf_1w': df_1w,
-            'pred_locked_at': wib_now().strftime('%d %b %Y %H:%M WIB'),
-            'pred_locked_trading_date': trading_date,
-            'actuals_refreshed_at': wib_now().strftime('%d %b %Y %H:%M WIB'),
-            'smc_score': smc_score,
-            'bullish_fvg': bullish_fvg,
-            'bearish_fvg': bearish_fvg,
-            'filled_fvg': filled_fvg,
-            'nearest_fvg': nearest_fvg,
-            'enhanced_trade': enhanced_trade,
-            'pump_analysis': pump_analysis,
-            'advanced_data': advanced_data,
-            'ai_prediction': ai_pred,
-            'fibonacci_levels': fib,
-            'chart_patterns': chart_patterns,
-            'elliot_wave': elliot,
-            'predictions_7d': predictions_7d,
-            'pred_summary': pred_sum,
-            'agreement_pct': round(agree_ratio * 100, 1),
-            'confidence_score': compute_confidence_score({
-                'agreement_pct': agree_ratio * 100,
-                'smc_score': smc_score,
-                'pump_analysis': pump_analysis,
-                'ai_prediction': ai_pred,
-                'hurst': H_exp,
-                'vol_regime': vol_regime,
-                'cross_validation': cv_result
-            }),
-            'bos_choch': bos_choch,
-            'fvg_status': {'unfilled_bullish': bullish_fvg, 'unfilled_bearish': bearish_fvg, 'filled': filled_fvg},
-            'ob_validation': ob_data,
-            'liquidity_sweep': sweep,
-            'institutional_candle': inst_candle,
-            'absorption_detected': absorption,
-            'divergence_strength': divs.get('strength', 0),
-            'failed_divergence': divs.get('failed', False),
-            'volume_profile_data': {'poc': poc, 'vah': vah, 'val': val},
-            'cross_validation': cv_result,
-            'death_cat_bounce': death_cat,
-            'bandar_signals': bandar_signals,
-            'vwap_bands': {
-                'vwap': daily_ind['VWAP'].iloc[-1] if 'VWAP' in daily_ind.columns else None,
-                'upper_1': daily_ind['VWAP_Upper_1'].iloc[-1] if 'VWAP_Upper_1' in daily_ind.columns else None,
-                'lower_1': daily_ind['VWAP_Lower_1'].iloc[-1] if 'VWAP_Lower_1' in daily_ind.columns else None,
-            },
-            'adl_analysis': {
-                'adl': daily_ind['ADL'].iloc[-1] if 'ADL' in daily_ind.columns else None,
-                'divergence': daily_ind['ADL_Divergence'].iloc[-1] if 'ADL_Divergence' in daily_ind.columns else 'N/A',
-            },
-            # NEW TECHNICALS
-            'pivot_points': pivot_points,
-            'harmonic_patterns': harmonic_patterns,
-            'atr_trailing_stop': atr_trailing_stop,
-            'heikin_ashi': heikin_ashi,
-            'stoch_rsi': stoch_rsi,
-            'money_flow_index': money_flow_index,
-            'aroon': aroon,
-            'zig_zag': zig_zag,
-            'cci': cci,
-            'ultimate_oscillator': ultimate_oscillator,
-            'vortex': vortex,
-            'mass_index': mass_index,
-            'rvi': rvi,
-            'force_index': force_index
-        }
-        
-        save_predictions(symbol, exchange_name, trading_date, predictions_7d)
-        save_full_snapshot(symbol, exchange_name, trading_date, result)
-        return result
-    except Exception:
+                    return fetch_ohlcv_cached(symbol, 'okx', timeframe, limit)
+                except:
+                    return None
         return None
-
 # ======================== RENDER RESULT (SINGKAT) ========================
 def render_result_advanced(dr):
     if dr is None or not isinstance(dr, dict):
