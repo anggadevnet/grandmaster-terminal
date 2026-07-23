@@ -332,92 +332,78 @@ def load_predictions(symbol, exchange, trading_date):
 # ======================== DATA FETCH ========================
 @st.cache_data(ttl=120, hash_funcs={pd.DataFrame: lambda df: hash(df.to_json()) if df is not None else "None"})
 def fetch_ohlcv_cached(symbol, exchange_name, timeframe='1d', limit=400):
-    # 🔥 BYBIT PAKE REQUESTS LANGSUNG
-    if exchange_name == 'bybit':
-        try:
-            import requests
-            
-            # Mapping timeframe BYBIT
-            tf_map = {
-                '1m': '1', '3m': '3', '5m': '5', '15m': '15',
-                '30m': '30', '1h': '60', '2h': '120', '4h': '240',
-                '6h': '360', '12h': '720', '1d': 'D', '1w': 'W'
-            }
-            
-            # 🔥 BYBIT PAKAI SYMBOL TANPA /USDT
-            symbol_clean = symbol.replace('/USDT', '')
-            
-            params = {
-                'category': 'spot',
-                'symbol': symbol_clean,
-                'interval': tf_map.get(timeframe, 'D'),
-                'limit': limit
-            }
-            
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-            
-            r = requests.get(
-                'https://api.bybit.com/v5/market/kline',
-                params=params,
-                headers=headers,
-                timeout=30
-            )
-            
-            # 🔥 DEBUG - TAMPILIN RESPONSE KALAU ERROR
-            data = r.json()
-            
-            if data.get('retCode') == 0:
-                candles = data['result']['list']
-                
-                # 🔥 BYBIT RETURN NYA [timestamp, open, high, low, close, volume, turnover]
-                df = pd.DataFrame(candles, columns=['timestamp','open','high','low','close','volume','turnover'])
-                
-                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
-                for col in ['open','high','low','close','volume']:
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
-                
-                df = df.sort_values('timestamp').reset_index(drop=True)
-                return df[['timestamp','open','high','low','close','volume']]
-            else:
-                # 🔥 BYBIT ERROR, TAMPILIN PESAN ERRORNYA
-                st.warning(f"⚠️ Bybit Error: {data.get('retMsg', 'Unknown error')}")
-                # COBA BINANCE
-                return fetch_ohlcv_cached(symbol, 'binance', timeframe, limit)
-                
-        except Exception as e:
-            st.warning(f"⚠️ Bybit Exception: {str(e)[:100]}")
-            # BYBIT GAGAL, COBA BINANCE
-            return fetch_ohlcv_cached(symbol, 'binance', timeframe, limit)
-    
-    # 🔥 BINANCE, OKX, KUCOIN PAKAI CCXT
     try:
         exchange_class = getattr(ccxt, exchange_name)
+        
         config = {
             'enableRateLimit': True,
             'options': {'defaultType': 'spot'},
             'timeout': 60000,
-            'headers': {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+            'headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
         }
-        exchange = exchange_class(config)
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-        if ohlcv and len(ohlcv) > 5:
-            df = pd.DataFrame(ohlcv, columns=['timestamp','open','high','low','close','volume'])
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
-            df = df.dropna().reset_index(drop=True)
-            for col in ['open','high','low','close','volume']:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-            return df
-    except Exception as e:
+        
+        # 🔥 KONFIGURASI KHUSUS PER EXCHANGE
         if exchange_name == 'binance':
+            config['urls'] = {
+                'api': {
+                    'public': 'https://api.binance.com',
+                    'private': 'https://api.binance.com'
+                }
+            }
+        elif exchange_name == 'okx':
+            config['urls'] = {
+                'api': {
+                    'public': 'https://www.okx.com',
+                    'private': 'https://www.okx.com'
+                }
+            }
+        elif exchange_name == 'kucoin':
+            config['urls'] = {
+                'api': {
+                    'public': 'https://api.kucoin.com',
+                    'private': 'https://api.kucoin.com'
+                }
+            }
+        elif exchange_name == 'bybit':
+            # 🔥 PAKAI ENDPOINT ALTERNATIF BYTICK YANG KAMU TEMUKAN
+            config['urls'] = {
+                'api': {
+                    'public': 'https://api.bytick.com',
+                    'private': 'https://api.bytick.com'
+                }
+            }
+            config['options']['defaultType'] = 'spot'
+            config['options']['adjustForTimeDifference'] = True
+        
+        exchange = exchange_class(config)
+        
+        # 🔥 BYBIT BUTUH PARAMS CATEGORY SPOT
+        if exchange_name == 'bybit':
+            ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit, params={'category': 'spot'})
+        else:
+            ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+        
+        if not ohlcv or len(ohlcv) < 5:
+            return None
+            
+        df = pd.DataFrame(ohlcv, columns=['timestamp','open','high','low','close','volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
+        df = df.dropna().reset_index(drop=True)
+        for col in ['open','high','low','close','volume']:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        return df
+        
+    except Exception as e:
+        # 🔥 KALAU TETAP GAGAL, FALLBACK KE BINANCE
+        if exchange_name == 'bybit':
             try:
-                return fetch_ohlcv_cached(symbol, 'okx', timeframe, limit)
+                st.warning(f"⚠️ Bybit error, fallback ke Binance: {str(e)[:50]}")
+                return fetch_ohlcv_cached(symbol, 'binance', timeframe, limit)
             except:
                 return None
         return None
-    
-    return None
 
 # ======================== UTILS ========================
 def safe_get(v, default=np.nan):
