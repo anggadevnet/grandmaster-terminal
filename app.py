@@ -333,37 +333,66 @@ def load_predictions(symbol, exchange, trading_date):
 @st.cache_data(ttl=120, hash_funcs={pd.DataFrame: lambda df: hash(df.to_json()) if df is not None else "None"})
 def fetch_ohlcv_cached(symbol, exchange_name, timeframe='1d', limit=400):
     try:
-        exchange_class = getattr(ccxt, exchange_name)
-        exchange = exchange_class({
-            'enableRateLimit': True,
-            'options': {'defaultType': 'spot'},
-            'timeout': 20000
-        })
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-        if not ohlcv or len(ohlcv) < 5: return None
-        df = pd.DataFrame(ohlcv, columns=['timestamp','open','high','low','close','volume'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
-        df = df.dropna().reset_index(drop=True)
-        for col in ['open','high','low','close','volume']:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-        return df
+        # 🔥 PAKAI OKX DULU KALAU BINANCE/BYBIT GAGAL
+        exchange_to_try = [exchange_name]
+        
+        # KALAU BINANCE ATAU BYBIT, COBA OKX JUGA
+        if exchange_name in ['binance', 'bybit']:
+            exchange_to_try.append('okx')
+        
+        for ex_name in exchange_to_try:
+            try:
+                exchange_class = getattr(ccxt, ex_name)
+                
+                # 🔥 Konfigurasi anti-block
+                config = {
+                    'enableRateLimit': True,
+                    'options': {'defaultType': 'spot'},
+                    'timeout': 60000,  # 60 detik
+                    'headers': {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                    }
+                }
+                
+                # 🔥 BYBIT specific
+                if ex_name == 'bybit':
+                    config['urls'] = {
+                        'api': {
+                            'public': 'https://api.bybit.com',
+                            'private': 'https://api.bybit.com'
+                        }
+                    }
+                
+                # 🔥 BINANCE specific
+                elif ex_name == 'binance':
+                    config['urls'] = {
+                        'api': {
+                            'public': 'https://api.binance.com',
+                            'private': 'https://api.binance.com'
+                        }
+                    }
+                
+                exchange = exchange_class(config)
+                
+                # COBA FETCH
+                ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+                
+                if ohlcv and len(ohlcv) > 5:
+                    df = pd.DataFrame(ohlcv, columns=['timestamp','open','high','low','close','volume'])
+                    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
+                    df = df.dropna().reset_index(drop=True)
+                    for col in ['open','high','low','close','volume']:
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                    return df
+                    
+            except Exception as e:
+                # GAGAL, COBA EXCHANGE LAIN
+                continue
+        
+        return None
+        
     except Exception:
         return None
-
-def fetch_multiple_timeframes_parallel(symbol, exchange_name, timeframes):
-    results = {}
-    with ThreadPoolExecutor(max_workers=min(len(timeframes), 4)) as executor:
-        future_to_tf = {
-            executor.submit(fetch_ohlcv_cached, symbol, exchange_name, tf, 700 if tf == '15m' else 400): tf
-            for tf in timeframes
-        }
-        for future in as_completed(future_to_tf):
-            tf = future_to_tf[future]
-            try:
-                results[tf] = future.result()
-            except Exception:
-                results[tf] = None
-    return results
 
 # ======================== UTILS ========================
 def safe_get(v, default=np.nan):
