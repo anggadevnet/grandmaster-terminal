@@ -332,119 +332,64 @@ def load_predictions(symbol, exchange, trading_date):
 # ======================== DATA FETCH ========================
 @st.cache_data(ttl=120, hash_funcs={pd.DataFrame: lambda df: hash(df.to_json()) if df is not None else "None"})
 def fetch_ohlcv_cached(symbol, exchange_name, timeframe='1d', limit=400):
-    try:
-        # 🔥 KHUSUS BYBIT - PAKAI REQUESTS LANGSUNG (BIAR TEMBUS)
-        if exchange_name == 'bybit':
+    # 🔥 BYBIT PAKE REQUESTS LANGSUNG
+    if exchange_name == 'bybit':
+        try:
             import requests
-            
-            # Mapping timeframe BYBIT
-            tf_map = {
-                '1m': '1', '3m': '3', '5m': '5', '15m': '15',
-                '30m': '30', '1h': '60', '2h': '120', '4h': '240',
-                '6h': '360', '12h': '720', '1d': 'D', '1w': 'W'
-            }
-            
-            bybit_tf = tf_map.get(timeframe, 'D')
-            symbol_clean = symbol.replace('/USDT', '')
-            
+            tf_map = {'15m': '15', '1h': '60', '4h': '240', '1d': 'D', '1w': 'W'}
             params = {
                 'category': 'spot',
-                'symbol': symbol_clean,
-                'interval': bybit_tf,
+                'symbol': symbol.replace('/USDT', ''),
+                'interval': tf_map.get(timeframe, 'D'),
                 'limit': limit
             }
-            
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-            
-            response = requests.get(
+            r = requests.get(
                 'https://api.bybit.com/v5/market/kline',
                 params=params,
-                headers=headers,
+                headers={'User-Agent': 'Mozilla/5.0'},
                 timeout=30
             )
-            data = response.json()
-            
+            data = r.json()
             if data.get('retCode') == 0:
                 candles = data['result']['list']
                 df = pd.DataFrame(candles, columns=['timestamp','open','high','low','close','volume','turnover'])
-                
                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
                 for col in ['open','high','low','close','volume']:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
-                
                 df = df.sort_values('timestamp').reset_index(drop=True)
                 return df[['timestamp','open','high','low','close','volume']]
-            else:
-                # BYBIT GAGAL, COBA BINANCE
-                return fetch_ohlcv_cached(symbol, 'binance', timeframe, limit)
-        
-        # 🔥 BINANCE, OKX, KUCOIN PAKAI CCXT (YANG UDAH JALAN)
-        exchange_to_try = [exchange_name]
-        
-        # KALAU BINANCE, COBA OKX JUGA
-        if exchange_name in ['binance']:
-            exchange_to_try.append('okx')
-        
-        for ex_name in exchange_to_try:
+        except:
+            # BYBIT GAGAL, COBA BINANCE
+            return fetch_ohlcv_cached(symbol, 'binance', timeframe, limit)
+    
+    # 🔥 BINANCE, OKX, KUCOIN PAKAI CCXT
+    try:
+        exchange_class = getattr(ccxt, exchange_name)
+        config = {
+            'enableRateLimit': True,
+            'options': {'defaultType': 'spot'},
+            'timeout': 60000,
+            'headers': {'User-Agent': 'Mozilla/5.0'}
+        }
+        exchange = exchange_class(config)
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+        if ohlcv and len(ohlcv) > 5:
+            df = pd.DataFrame(ohlcv, columns=['timestamp','open','high','low','close','volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
+            df = df.dropna().reset_index(drop=True)
+            for col in ['open','high','low','close','volume']:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+            return df
+    except:
+        # FALLBACK
+        if exchange_name == 'binance':
             try:
-                exchange_class = getattr(ccxt, ex_name)
-                
-                config = {
-                    'enableRateLimit': True,
-                    'options': {'defaultType': 'spot'},
-                    'timeout': 60000,
-                    'headers': {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                    }
-                }
-                
-                # BINANCE
-                if ex_name == 'binance':
-                    config['urls'] = {
-                        'api': {
-                            'public': 'https://api.binance.com',
-                            'private': 'https://api.binance.com'
-                        }
-                    }
-                
-                # OKX
-                elif ex_name == 'okx':
-                    config['urls'] = {
-                        'api': {
-                            'public': 'https://www.okx.com',
-                            'private': 'https://www.okx.com'
-                        }
-                    }
-                
-                # KUCOIN
-                elif ex_name == 'kucoin':
-                    config['urls'] = {
-                        'api': {
-                            'public': 'https://api.kucoin.com',
-                            'private': 'https://api.kucoin.com'
-                        }
-                    }
-                
-                exchange = exchange_class(config)
-                ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-                
-                if ohlcv and len(ohlcv) > 5:
-                    df = pd.DataFrame(ohlcv, columns=['timestamp','open','high','low','close','volume'])
-                    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
-                    df = df.dropna().reset_index(drop=True)
-                    for col in ['open','high','low','close','volume']:
-                        df[col] = pd.to_numeric(df[col], errors='coerce')
-                    return df
-                    
-            except Exception:
-                continue
-        
+                return fetch_ohlcv_cached(symbol, 'okx', timeframe, limit)
+            except:
+                return None
         return None
-        
-    except Exception:
-        return None
+    
+    return None
 
 # ======================== UTILS ========================
 def safe_get(v, default=np.nan):
