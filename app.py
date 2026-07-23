@@ -333,65 +333,111 @@ def load_predictions(symbol, exchange, trading_date):
 @st.cache_data(ttl=120, hash_funcs={pd.DataFrame: lambda df: hash(df.to_json()) if df is not None else "None"})
 def fetch_ohlcv_cached(symbol, exchange_name, timeframe='1d', limit=400):
     try:
-        # 🔥 PAKAI OKX DULU KALAU BINANCE/BYBIT GAGAL
-        exchange_to_try = [exchange_name]
-        
-        # KALAU BINANCE ATAU BYBIT, COBA OKX JUGA
-        if exchange_name in ['binance', 'bybit']:
-            exchange_to_try.append('okx')
-        
-        for ex_name in exchange_to_try:
+        # 🔥 KHUSUS BYBIT - PAKAI REQUEST LANGSUNG
+        if exchange_name == 'bybit':
+            import requests
+            import pandas as pd
+            
+            # BYBIT V5 PUBLIC API
+            base_url = "https://api.bybit.com/v5/market/kline"
+            
+            # Mapping timeframe BYBIT
+            tf_map = {
+                '1m': '1', '3m': '3', '5m': '5', '15m': '15',
+                '30m': '30', '1h': '60', '2h': '120', '4h': '240',
+                '6h': '360', '12h': '720', '1d': 'D', '1w': 'W'
+            }
+            
+            bybit_tf = tf_map.get(timeframe, 'D')
+            symbol_clean = symbol.replace('/USDT', '')
+            
+            params = {
+                'category': 'spot',
+                'symbol': symbol_clean,
+                'interval': bybit_tf,
+                'limit': limit
+            }
+            
             try:
-                exchange_class = getattr(ccxt, ex_name)
+                response = requests.get(base_url, params=params, timeout=30)
+                data = response.json()
                 
-                # 🔥 Konfigurasi anti-block
-                config = {
-                    'enableRateLimit': True,
-                    'options': {'defaultType': 'spot'},
-                    'timeout': 60000,  # 60 detik
-                    'headers': {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                    }
-                }
-                
-                # 🔥 BYBIT specific
-                if ex_name == 'bybit':
-                    config['urls'] = {
-                        'api': {
-                            'public': 'https://api.bybit.com',
-                            'private': 'https://api.bybit.com'
-                        }
-                    }
-                
-                # 🔥 BINANCE specific
-                elif ex_name == 'binance':
-                    config['urls'] = {
-                        'api': {
-                            'public': 'https://api.binance.com',
-                            'private': 'https://api.binance.com'
-                        }
-                    }
-                
-                exchange = exchange_class(config)
-                
-                # COBA FETCH
-                ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-                
-                if ohlcv and len(ohlcv) > 5:
-                    df = pd.DataFrame(ohlcv, columns=['timestamp','open','high','low','close','volume'])
+                if data.get('retCode') == 0:
+                    candles = data['result']['list']
+                    df = pd.DataFrame(candles, columns=['timestamp','open','high','low','close','volume','turnover'])
+                    
                     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
-                    df = df.dropna().reset_index(drop=True)
                     for col in ['open','high','low','close','volume']:
                         df[col] = pd.to_numeric(df[col], errors='coerce')
-                    return df
                     
-            except Exception as e:
-                # GAGAL, COBA EXCHANGE LAIN
-                continue
+                    df = df.sort_values('timestamp').reset_index(drop=True)
+                    return df[['timestamp','open','high','low','close','volume']]
+                else:
+                    # 🔥 BYBIT GAGAL, COBA BINANCE
+                    return fetch_ohlcv_cached(symbol, 'binance', timeframe, limit)
+            except:
+                # 🔥 BYBIT GAGAL, COBA BINANCE
+                return fetch_ohlcv_cached(symbol, 'binance', timeframe, limit)
         
-        return None
+        # 🔥 EXCHANGE LAIN (BINANCE, OKX, KUCOIN) PAKAI CCXT
+        exchange_class = getattr(ccxt, exchange_name)
         
-    except Exception:
+        config = {
+            'enableRateLimit': True,
+            'options': {'defaultType': 'spot'},
+            'timeout': 60000,
+            'headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+        }
+        
+        # BINANCE
+        if exchange_name == 'binance':
+            config['urls'] = {
+                'api': {
+                    'public': 'https://api.binance.com',
+                    'private': 'https://api.binance.com'
+                }
+            }
+        
+        # OKX
+        elif exchange_name == 'okx':
+            config['urls'] = {
+                'api': {
+                    'public': 'https://www.okx.com',
+                    'private': 'https://www.okx.com'
+                }
+            }
+        
+        # KUCOIN
+        elif exchange_name == 'kucoin':
+            config['urls'] = {
+                'api': {
+                    'public': 'https://api.kucoin.com',
+                    'private': 'https://api.kucoin.com'
+                }
+            }
+        
+        exchange = exchange_class(config)
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+        
+        if not ohlcv or len(ohlcv) < 5:
+            return None
+            
+        df = pd.DataFrame(ohlcv, columns=['timestamp','open','high','low','close','volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
+        df = df.dropna().reset_index(drop=True)
+        for col in ['open','high','low','close','volume']:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        return df
+        
+    except Exception as e:
+        # FALLBACK TERAKHIR
+        if exchange_name == 'bybit':
+            try:
+                return fetch_ohlcv_cached(symbol, 'binance', timeframe, limit)
+            except:
+                return None
         return None
 
 # ======================== UTILS ========================
