@@ -1,0 +1,46 @@
+name: Deploy Streamlit with WARP
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      # 🔥 PASANG WARP (BIAR BYBIT TEMBUS!)
+      - name: Setup Cloudflare WARP
+        uses: viperadnan-git/setup-warp@v1
+        with:
+          mode: client
+          stack: dual
+          retries: 5
+
+      # 🔥 CEK WARP AKTIF
+      - name: Verify WARP
+        run: |
+          echo "=== WARP Status ==="
+          curl -s https://cloudflare.com/cdn-cgi/trace | grep warp
+          curl -s https://cloudflare.com/cdn-cgi/trace | grep ip
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run Streamlit
+        env:
+          BYBIT_USE_WARP: "true"
+        run: |
+          streamlit run app.py --server.port 8501 &
+          sleep 5
+          echo "✅ Streamlit running with WARP!"
