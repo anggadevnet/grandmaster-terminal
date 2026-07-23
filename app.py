@@ -333,62 +333,78 @@ def load_predictions(symbol, exchange, trading_date):
 @st.cache_data(ttl=120, hash_funcs={pd.DataFrame: lambda df: hash(df.to_json()) if df is not None else "None"})
 def fetch_ohlcv_cached(symbol, exchange_name, timeframe='1d', limit=400):
     
-    # 🔥 BYBIT PAKE REQUESTS LANGSUNG KE BYTICK
+    # 🔥 BYBIT PAKE MULTI ENDPOINT (COBA SAMPE BERHASIL!)
     if exchange_name == 'bybit':
-        try:
-            import requests
-            
-            tf_map = {
-                '1m': '1', '3m': '3', '5m': '5', '15m': '15',
-                '30m': '30', '1h': '60', '2h': '120', '4h': '240',
-                '6h': '360', '12h': '720', '1d': 'D', '1w': 'W'
-            }
-            
-            symbol_clean = symbol.replace('/USDT', '')
-            
-            params = {
-                'category': 'spot',
-                'symbol': symbol_clean,
-                'interval': tf_map.get(timeframe, 'D'),
-                'limit': limit
-            }
-            
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-            
-            # 🔥 PAKAI BYTICK (ENDPOINT ALTERNATIF)
-            r = requests.get(
-                'https://api.bytick.com/v5/market/kline',
-                params=params,
-                headers=headers,
-                timeout=30
-            )
-            
-            data = r.json()
-            
-            if data.get('retCode') == 0:
-                candles = data['result']['list']
+        import requests
+        
+        # 🔥 DAFTAR ENDPOINT BYBIT (URUTAN PRIORITAS)
+        endpoints = [
+            'https://api.bybit.com',      # Global utama
+            'https://api.bytick.com',     # Alternatif 1 (yang kamu pake)
+            'https://api.bybit.id',       # Indonesia (paling cocok!)
+            'https://api.bybitglobal.com', # Regional tertentu
+            'https://api.bybknet.com',    # Alternatif 2
+            'https://api.bybit.nl',       # Netherlands
+            'https://api.bybit.tr',       # Turkey
+            'https://api.bybit.kz',       # Kazakhstan
+            'https://api.bybit.ae',       # UAE
+        ]
+        
+        tf_map = {
+            '1m': '1', '3m': '3', '5m': '5', '15m': '15',
+            '30m': '30', '1h': '60', '2h': '120', '4h': '240',
+            '6h': '360', '12h': '720', '1d': 'D', '1w': 'W'
+        }
+        
+        symbol_clean = symbol.replace('/USDT', '')
+        
+        params = {
+            'category': 'spot',
+            'symbol': symbol_clean,
+            'interval': tf_map.get(timeframe, 'D'),
+            'limit': limit
+        }
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        # 🔥 COBA SETIAP ENDPOINT SAMPE BERHASIL
+        last_error = None
+        for endpoint in endpoints:
+            try:
+                url = f"{endpoint}/v5/market/kline"
                 
-                if candles and len(candles) > 0:
-                    df = pd.DataFrame(candles, columns=['timestamp','open','high','low','close','volume','turnover'])
-                    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
-                    for col in ['open','high','low','close','volume']:
-                        df[col] = pd.to_numeric(df[col], errors='coerce')
-                    df = df.sort_values('timestamp').reset_index(drop=True)
-                    return df[['timestamp','open','high','low','close','volume']]
-                else:
-                    # BYBIT GAGAL, COBA BINANCE
-                    return fetch_ohlcv_cached(symbol, 'binance', timeframe, limit)
-            else:
-                # BYBIT GAGAL, COBA BINANCE
-                return fetch_ohlcv_cached(symbol, 'binance', timeframe, limit)
+                r = requests.get(
+                    url,
+                    params=params,
+                    headers=headers,
+                    timeout=15
+                )
                 
-        except Exception as e:
-            # BYBIT GAGAL, COBA BINANCE
-            return fetch_ohlcv_cached(symbol, 'binance', timeframe, limit)
+                data = r.json()
+                
+                if data.get('retCode') == 0:
+                    candles = data['result']['list']
+                    
+                    if candles and len(candles) > 0:
+                        df = pd.DataFrame(candles, columns=['timestamp','open','high','low','close','volume','turnover'])
+                        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
+                        for col in ['open','high','low','close','volume']:
+                            df[col] = pd.to_numeric(df[col], errors='coerce')
+                        df = df.sort_values('timestamp').reset_index(drop=True)
+                        
+                        # 🔥 KALAU BERHASIL, RETURN LANGSUNG!
+                        return df[['timestamp','open','high','low','close','volume']]
+                        
+            except Exception as e:
+                last_error = str(e)
+                continue
+        
+        # 🔥 SEMUA ENDPOINT GAGAL, COBA BINANCE
+        return fetch_ohlcv_cached(symbol, 'binance', timeframe, limit)
     
-    # 🔥 BINANCE, OKX, KUCOIN PAKAI CCXT (INI YANG UDAH BERHASIL SEBELUMNYA)
+    # 🔥 BINANCE, OKX, KUCOIN PAKAI CCXT (INI YANG UDAH BERHASIL)
     try:
         exchange_class = getattr(ccxt, exchange_name)
         
@@ -401,7 +417,6 @@ def fetch_ohlcv_cached(symbol, exchange_name, timeframe='1d', limit=400):
             }
         }
         
-        # 🔥 KONFIGURASI PER EXCHANGE
         if exchange_name == 'binance':
             config['urls'] = {
                 'api': {
@@ -438,7 +453,6 @@ def fetch_ohlcv_cached(symbol, exchange_name, timeframe='1d', limit=400):
         return df
         
     except Exception:
-        # FALLBACK TERAKHIR
         if exchange_name == 'binance':
             try:
                 return fetch_ohlcv_cached(symbol, 'okx', timeframe, limit)
