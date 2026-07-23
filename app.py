@@ -332,6 +332,63 @@ def load_predictions(symbol, exchange, trading_date):
 # ======================== DATA FETCH ========================
 @st.cache_data(ttl=120, hash_funcs={pd.DataFrame: lambda df: hash(df.to_json()) if df is not None else "None"})
 def fetch_ohlcv_cached(symbol, exchange_name, timeframe='1d', limit=400):
+    
+    # 🔥 BYBIT PAKE REQUESTS LANGSUNG KE BYTICK
+    if exchange_name == 'bybit':
+        try:
+            import requests
+            
+            tf_map = {
+                '1m': '1', '3m': '3', '5m': '5', '15m': '15',
+                '30m': '30', '1h': '60', '2h': '120', '4h': '240',
+                '6h': '360', '12h': '720', '1d': 'D', '1w': 'W'
+            }
+            
+            symbol_clean = symbol.replace('/USDT', '')
+            
+            params = {
+                'category': 'spot',
+                'symbol': symbol_clean,
+                'interval': tf_map.get(timeframe, 'D'),
+                'limit': limit
+            }
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            
+            # 🔥 PAKAI BYTICK (ENDPOINT ALTERNATIF)
+            r = requests.get(
+                'https://api.bytick.com/v5/market/kline',
+                params=params,
+                headers=headers,
+                timeout=30
+            )
+            
+            data = r.json()
+            
+            if data.get('retCode') == 0:
+                candles = data['result']['list']
+                
+                if candles and len(candles) > 0:
+                    df = pd.DataFrame(candles, columns=['timestamp','open','high','low','close','volume','turnover'])
+                    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
+                    for col in ['open','high','low','close','volume']:
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                    df = df.sort_values('timestamp').reset_index(drop=True)
+                    return df[['timestamp','open','high','low','close','volume']]
+                else:
+                    # BYBIT GAGAL, COBA BINANCE
+                    return fetch_ohlcv_cached(symbol, 'binance', timeframe, limit)
+            else:
+                # BYBIT GAGAL, COBA BINANCE
+                return fetch_ohlcv_cached(symbol, 'binance', timeframe, limit)
+                
+        except Exception as e:
+            # BYBIT GAGAL, COBA BINANCE
+            return fetch_ohlcv_cached(symbol, 'binance', timeframe, limit)
+    
+    # 🔥 BINANCE, OKX, KUCOIN PAKAI CCXT (INI YANG UDAH BERHASIL SEBELUMNYA)
     try:
         exchange_class = getattr(ccxt, exchange_name)
         
@@ -344,7 +401,7 @@ def fetch_ohlcv_cached(symbol, exchange_name, timeframe='1d', limit=400):
             }
         }
         
-        # 🔥 KONFIGURASI KHUSUS PER EXCHANGE
+        # 🔥 KONFIGURASI PER EXCHANGE
         if exchange_name == 'binance':
             config['urls'] = {
                 'api': {
@@ -366,24 +423,9 @@ def fetch_ohlcv_cached(symbol, exchange_name, timeframe='1d', limit=400):
                     'private': 'https://api.kucoin.com'
                 }
             }
-        elif exchange_name == 'bybit':
-            # 🔥 PAKAI ENDPOINT ALTERNATIF BYTICK YANG KAMU TEMUKAN
-            config['urls'] = {
-                'api': {
-                    'public': 'https://api.bytick.com',
-                    'private': 'https://api.bytick.com'
-                }
-            }
-            config['options']['defaultType'] = 'spot'
-            config['options']['adjustForTimeDifference'] = True
         
         exchange = exchange_class(config)
-        
-        # 🔥 BYBIT BUTUH PARAMS CATEGORY SPOT
-        if exchange_name == 'bybit':
-            ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit, params={'category': 'spot'})
-        else:
-            ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
         
         if not ohlcv or len(ohlcv) < 5:
             return None
@@ -395,12 +437,11 @@ def fetch_ohlcv_cached(symbol, exchange_name, timeframe='1d', limit=400):
             df[col] = pd.to_numeric(df[col], errors='coerce')
         return df
         
-    except Exception as e:
-        # 🔥 KALAU TETAP GAGAL, FALLBACK KE BINANCE
-        if exchange_name == 'bybit':
+    except Exception:
+        # FALLBACK TERAKHIR
+        if exchange_name == 'binance':
             try:
-                st.warning(f"⚠️ Bybit error, fallback ke Binance: {str(e)[:50]}")
-                return fetch_ohlcv_cached(symbol, 'binance', timeframe, limit)
+                return fetch_ohlcv_cached(symbol, 'okx', timeframe, limit)
             except:
                 return None
         return None
